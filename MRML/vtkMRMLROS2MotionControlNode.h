@@ -54,6 +54,49 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2MotionControlNode: public vt
                                                       double accelerationScaling = 0.5,
                                                       double planningTimeSec     = 5.0);
 
+  /** Plan a joint-space trajectory from an explicit immutable start state.
+   *
+   *  startJointNames/startJointValues define the complete submitted planner
+   *  start state. goalJointValues must match the planning group's joint order.
+   *  Unlike PlanMoveItTrajectory(), this method never substitutes MoveIt's
+   *  monitored current state for the caller-supplied start state. The result
+   *  is cached for ExecuteCachedMoveItTrajectory(); caller owns the returned
+   *  object. */
+  vtkMoveitMsgsRobotTrajectory* PlanMoveItTrajectoryFromState(
+      const std::string & groupName,
+      const std::vector<std::string> & startJointNames,
+      const std::vector<double> & startJointValues,
+      const std::vector<double> & goalJointValues,
+      double velocityScaling     = 0.5,
+      double accelerationScaling = 0.5,
+      double planningTimeSec     = 5.0);
+
+  /** Human-readable result from the most recent joint-space plan request. */
+  std::string GetLastJointPlanMessage() const;
+
+  /** Query MoveIt's current PlanningScene for one explicit joint state.
+   *  This is read-only: it does not change the monitored robot state, publish
+   *  joint commands, or plan a path. */
+  bool CheckMoveItStateValidity(const std::string & groupName,
+                                const std::vector<std::string> & jointNames,
+                                const std::vector<double> & jointValues,
+                                double timeoutSec = 2.0);
+
+  /** Human-readable result from the most recent validity query. */
+  std::string GetLastStateValidityMessage() const;
+
+  /** Compute one explicit-state FK pose for *linkName* in MoveIt's model
+   *  frame. Translation is returned in Slicer millimetres. Caller owns the
+   *  returned matrix. */
+  vtkMatrix4x4* ComputeMoveItForwardKinematics(
+      const std::string & groupName,
+      const std::vector<std::string> & jointNames,
+      const std::vector<double> & jointValues,
+      const std::string & linkName,
+      double timeoutSec = 2.0);
+
+  std::string GetLastForwardKinematicsMessage() const;
+
   /** Plan a Cartesian end-effector trajectory through *targetPoses* using
    *  MoveIt's /compute_cartesian_path ROS service.
    *

@@ -72,7 +72,14 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   std::vector<double> ComputeMoveItIK(vtkMatrix4x4* targetPose,
                                       const std::string& tipLink,
                                       const std::vector<double>& seedJointValues,
-                                      double timeout = 1.0);
+                                      double timeout = 1.0,
+                                      bool avoidCollisions = true);
+  /** Return colliding body pairs for a diagnostic-only joint state.
+   *  Each entry is encoded as "body_a\tbody_b" for Python wrapping.
+   */
+  std::vector<std::string> GetMoveItCollidingBodyPairs(
+    const std::string& groupName,
+    const std::vector<double>& jointValues);
 
   // KDL Setup and IK methods
   bool SetupKDLIKWithLimits(void);

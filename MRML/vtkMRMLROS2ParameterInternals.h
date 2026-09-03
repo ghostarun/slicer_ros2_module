@@ -11,6 +11,7 @@
 // Added for modified event
 #include <vtkCommand.h>
 #include <vtkMRMLROS2ParameterNode.h>
+#include <vtkWeakPointer.h>
 
 class vtkMRMLROS2ParameterInternals {
 public:
@@ -119,7 +120,9 @@ protected:
       for (const auto &param : result) {
         mParameterStore[param.get_name()] = ROS2ParamToParameterMsg(param);
       }
-      mMRMLNode->InvokeCustomModifiedEvent(ParameterModifiedEvent);
+      if (mMRMLNode) {
+        mMRMLNode->InvokeCustomModifiedEvent(ParameterModifiedEvent);
+      }
     } catch (std::exception &e) {
       vtkGenericWarningMacro(<< "Exception: " << e.what());
     }
@@ -131,13 +134,17 @@ protected:
     for (const auto &new_param : event->new_parameters) {
       // rclcpp::Parameter param(new_param);
       mParameterStore[new_param.name] = new_param;
-      mMRMLNode->InvokeCustomModifiedEvent(ParameterModifiedEvent);
+      if (mMRMLNode) {
+        mMRMLNode->InvokeCustomModifiedEvent(ParameterModifiedEvent);
+      }
     }
     // Iterate over the changed parameters
     for (const auto &changed_param : event->changed_parameters) {
       // rclcpp::Parameter param(changed_param);
       mParameterStore[changed_param.name] = changed_param;
-      mMRMLNode->InvokeCustomModifiedEvent(ParameterModifiedEvent);
+      if (mMRMLNode) {
+        mMRMLNode->InvokeCustomModifiedEvent(ParameterModifiedEvent);
+      }
     }
     // Iterate over the deleted parameters
     for (const auto &deleted_param : event->deleted_parameters) {
@@ -150,7 +157,7 @@ protected:
 
   //  A pointer to a ROS2 parameter event subscriber.
   rclcpp::Subscription<rcl_interfaces::msg::ParameterEvent>::SharedPtr mParameterEventSubscriber = nullptr;
-  vtkMRMLROS2ParameterNode *mMRMLNode;
+  vtkWeakPointer<vtkMRMLROS2ParameterNode> mMRMLNode;
   rclcpp::Parameter mEmptyParameter;
   // A map of parameters - specifically, parameter messages.
   std::map<std::string, rcl_interfaces::msg::Parameter> mParameterStore;

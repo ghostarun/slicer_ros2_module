@@ -136,7 +136,6 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2NodeNode: public vtkMRMLNode
   std::string mMRMLNodeName = "ros2:node:undefined";
   std::string mROS2NodeName = "undefined";
 
-  std::vector<vtkMRMLROS2ParameterNode* > mParameterNodes;
   bool mSpinning = false;
 
   /*! Creates the tf2 buffer if needed, return true if created. */

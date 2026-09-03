@@ -833,7 +833,7 @@ bool vtkMRMLROS2RobotNode::SetupIKMoveIt(const std::string & groupName)
   }
 }
 
-std::vector<double> vtkMRMLROS2RobotNode::ComputeMoveItIK(vtkMatrix4x4* targetPose, const std::string& tipLink, const std::vector<double>& seedJointValues, double timeout)
+std::vector<double> vtkMRMLROS2RobotNode::ComputeMoveItIK(vtkMatrix4x4* targetPose, const std::string& tipLink, const std::vector<double>& seedJointValues, double timeout, bool avoidCollisions)
 {
   if (!targetPose) {
     vtkErrorMacro(<< "ComputeMoveItIK: target pose is null");
@@ -882,7 +882,7 @@ std::vector<double> vtkMRMLROS2RobotNode::ComputeMoveItIK(vtkMatrix4x4* targetPo
     pose_msg.orientation.w = quat.w();
 
     moveit::core::GroupStateValidityCallbackFn validity_callback;
-    if (mInternals->PlanningSceneMonitorPtr) {
+    if (avoidCollisions && mInternals->PlanningSceneMonitorPtr) {
       validity_callback =
         [this](moveit::core::RobotState* state,
                const moveit::core::JointModelGroup* joint_group,
@@ -922,6 +922,54 @@ std::vector<double> vtkMRMLROS2RobotNode::ComputeMoveItIK(vtkMatrix4x4* targetPo
     vtkErrorMacro(<< "ComputeMoveItIK: exception - " << e.what());
     return {};
   }
+}
+
+std::vector<std::string> vtkMRMLROS2RobotNode::GetMoveItCollidingBodyPairs(
+  const std::string& groupName,
+  const std::vector<double>& jointValues)
+{
+  std::vector<std::string> pairs;
+  if (!mInternals->RobotModelPtr || !mInternals->PlanningSceneMonitorPtr)
+  {
+    vtkErrorMacro(<< "GetMoveItCollidingBodyPairs: MoveIt scene is unavailable");
+    return pairs;
+  }
+  const moveit::core::JointModelGroup* joint_group =
+    mInternals->RobotModelPtr->getJointModelGroup(groupName);
+  if (!joint_group || jointValues.size() != joint_group->getVariableCount())
+  {
+    vtkErrorMacro(<< "GetMoveItCollidingBodyPairs: invalid group or joint vector");
+    return pairs;
+  }
+  try
+  {
+    planning_scene_monitor::LockedPlanningSceneRO scene(
+      mInternals->PlanningSceneMonitorPtr);
+    moveit::core::RobotState state(scene->getCurrentState());
+    state.setJointGroupPositions(joint_group, jointValues);
+    state.update();
+    if (!state.satisfiesBounds(joint_group))
+    {
+      pairs.emplace_back("__JOINT_BOUNDS__\t__VIOLATION__");
+    }
+    collision_detection::CollisionRequest request;
+    request.group_name = groupName;
+    request.contacts = true;
+    request.max_contacts = 100;
+    request.max_contacts_per_pair = 1;
+    collision_detection::CollisionResult result;
+    scene->checkCollision(request, result, state);
+    for (const auto& contact_entry : result.contacts)
+    {
+      pairs.push_back(
+        contact_entry.first.first + "\t" + contact_entry.first.second);
+    }
+  }
+  catch (const std::exception& exc)
+  {
+    vtkErrorMacro(<< "GetMoveItCollidingBodyPairs: " << exc.what());
+  }
+  return pairs;
 }
 
 
@@ -1417,22 +1465,36 @@ void vtkMRMLROS2RobotNode::UpdateScene(vtkMRMLScene *scene)
 {
   Superclass::UpdateScene(scene);
   int nbNodeRefs = this->GetNumberOfNodeReferences("node");
+  vtkMRMLROS2NodeNode * rosNode = nullptr;
   if (nbNodeRefs == 0) {
     // assigned to the default ROS node
-    auto defaultNode = scene->GetFirstNodeByName("ros2:node:slicer");
-    auto nodeId = defaultNode->GetID();
-    if(!defaultNode) {
-      vtkErrorMacro(<< "UpdateScene: default ros2 node unavailable. Unable to set reference for broadcaster \"" << GetName() << "\"");
-      return;
-    }
-    defaultNode->SetNthNodeReferenceID("robot", defaultNode->GetNumberOfNodeReferences("robot"),this->GetID());
-    this->SetNodeReferenceID("node", nodeId);
+    rosNode = vtkMRMLROS2NodeNode::SafeDownCast(
+      scene->GetFirstNodeByName("ros2:node:slicer"));
   } else if (nbNodeRefs == 1) {
-    auto defaultNode = scene->GetFirstNodeByName("ros2:node:slicer");
-    auto nodeId = defaultNode->GetID();
-    defaultNode->SetNthNodeReferenceID("robot", defaultNode->GetNumberOfNodeReferences("robot"), this->GetID());
-    this->SetNodeReferenceID("node", nodeId);
+    rosNode = vtkMRMLROS2NodeNode::SafeDownCast(
+      this->GetNthNodeReference("node", 0));
   } else {
-    vtkErrorMacro(<< "UpdateScene: more than one ROS2 node reference defined for broadcaster \"" << GetName() << "\"");
+    vtkErrorMacro(<< "UpdateScene: more than one ROS2 node reference defined for robot \"" << GetName() << "\"");
+    return;
   }
+
+  if (!rosNode) {
+    vtkErrorMacro(<< "UpdateScene: ROS2 node unavailable. Unable to set reference for robot \"" << GetName() << "\"");
+    return;
+  }
+
+  bool alreadyReferenced = false;
+  const int robotCount = rosNode->GetNumberOfNodeReferences("robot");
+  for (int index = 0; index < robotCount; ++index) {
+    const char * referenceId = rosNode->GetNthNodeReferenceID("robot", index);
+    if (referenceId && this->GetID() && std::string(referenceId) == this->GetID()) {
+      alreadyReferenced = true;
+      break;
+    }
+  }
+  if (!alreadyReferenced) {
+    rosNode->SetNthNodeReferenceID("robot", robotCount, this->GetID());
+  }
+  this->SetNodeReferenceID("node", rosNode->GetID());
+  mMRMLROS2Node = rosNode;
 }

@@ -65,7 +65,6 @@ void vtkMRMLROS2NodeNode::Destroy(void)
     vtkWarningMacro(<< "Destroy: node does not contain any ROS2 internals. Not destroying ROS2 node.");
     return;
   }
-  this->Scene->RemoveNode(this);
   mROS2NodeName = "undefined";
   mMRMLNodeName = "ros2:node:undefined";
   this->SetName(mMRMLNodeName.c_str());
@@ -158,7 +157,6 @@ vtkMRMLROS2SubscriberNode * vtkMRMLROS2NodeNode::CreateAndAddSubscriberNode(cons
   }
   // Something went wrong, cleanup
   this->GetScene()->RemoveNode(node);
-  node->Delete();
   return nullptr;
 }
 
@@ -193,7 +191,6 @@ vtkMRMLROS2PublisherNode * vtkMRMLROS2NodeNode::CreateAndAddPublisherNode(const 
   }
   // Something went wrong, cleanup
   this->GetScene()->RemoveNode(node);
-  node->Delete();
   return nullptr;
 }
 
@@ -214,7 +211,6 @@ vtkMRMLROS2ParameterNode * vtkMRMLROS2NodeNode::CreateAndAddParameterNode(const 
   }
   // Something went wrong, cleanup
   this->GetScene()->RemoveNode(parameterNode);
-  parameterNode->Delete();
   return nullptr;
 }
 
@@ -237,7 +233,6 @@ vtkMRMLROS2Tf2BroadcasterNode * vtkMRMLROS2NodeNode::CreateAndAddTf2BroadcasterN
   }
   // Something went wrong, cleanup
   this->GetScene()->RemoveNode(broadcasterNode);
-  broadcasterNode->Delete();
   return nullptr;
 }
 
@@ -261,7 +256,6 @@ vtkMRMLROS2Tf2LookupNode * vtkMRMLROS2NodeNode::CreateAndAddTf2LookupNode(const 
   }
   // Something went wrong, cleanup
   this->GetScene()->RemoveNode(lookupNode);
-  lookupNode->Delete();
   return nullptr;
 }
 
@@ -321,7 +315,6 @@ vtkMRMLROS2ServiceClientNode * vtkMRMLROS2NodeNode::CreateAndAddServiceClientNod
   }
   // Something went wrong, cleanup
   this->GetScene()->RemoveNode(node);
-  node->Delete();
   return nullptr;
 }
 
@@ -485,7 +478,6 @@ bool vtkMRMLROS2NodeNode::RemoveAndDeleteSubscriberNode(const std::string & topi
   }
   node->RemoveFromROS2Node(this->GetID(), topic);
   this->GetScene()->RemoveNode(node);
-  node->Delete();
   return true;
 }
 
@@ -499,7 +491,6 @@ bool vtkMRMLROS2NodeNode::RemoveAndDeletePublisherNode(const std::string & topic
   }
   node->RemoveFromROS2Node(this->GetID(), topic);
   this->GetScene()->RemoveNode(node);
-  node->Delete();
   return true;
 }
 
@@ -513,7 +504,6 @@ bool vtkMRMLROS2NodeNode::RemoveAndDeleteParameterNode(const std::string & monit
   }
   node->RemoveFromROS2Node(this->GetID());
   this->GetScene()->RemoveNode(node);
-  node->Delete();
   return true;
 }
 
@@ -527,7 +517,6 @@ bool vtkMRMLROS2NodeNode::RemoveAndDeleteParameterNodeByNodeID(const std::string
   }
   node->RemoveFromROS2Node(this->GetID());
   this->GetScene()->RemoveNode(node);
-  node->Delete();
   return true;
 }
 
@@ -541,7 +530,6 @@ bool vtkMRMLROS2NodeNode::RemoveAndDeleteTf2LookupNode(const std::string & nodeI
   }
   node->RemoveFromROS2Node(this->GetID());
   this->GetScene()->RemoveNode(node);
-  node->Delete();
   return true;
 }
 
@@ -555,7 +543,6 @@ bool vtkMRMLROS2NodeNode::RemoveAndDeleteTf2LookupNode(const std::string & paren
   }
   node->RemoveFromROS2Node(this->GetID());
   this->GetScene()->RemoveNode(node);
-  node->Delete();
   return true;
 }
 
@@ -569,7 +556,6 @@ bool vtkMRMLROS2NodeNode::RemoveAndDeleteTf2BroadcasterNode(const std::string & 
   }
   node->RemoveFromROS2Node(this->GetID());
   this->GetScene()->RemoveNode(node);
-  node->Delete();
   return true;
 }
 
@@ -583,7 +569,6 @@ bool vtkMRMLROS2NodeNode::RemoveAndDeleteTf2BroadcasterNode(const std::string & 
   }
   node->RemoveFromROS2Node(this->GetID());
   this->GetScene()->RemoveNode(node);
-  node->Delete();
   return true;
 }
 
@@ -598,6 +583,10 @@ bool vtkMRMLROS2NodeNode::RemoveAndDeleteRobotNode(const std::string & robotName
 
   // Use the robot node's own cleanup method for its managed objects
   node->RemoveFromROS2Node(this->GetID());
+
+  mRobotNames.erase(
+    std::remove(mRobotNames.begin(), mRobotNames.end(), robotName),
+    mRobotNames.end());
 
   // Remove the robot itself
   this->GetScene()->RemoveNode(node);
@@ -614,7 +603,6 @@ bool vtkMRMLROS2NodeNode::RemoveAndDeleteServiceClientNode(const std::string & s
   }
   node->RemoveFromROS2Node(this->GetID(), service);
   this->GetScene()->RemoveNode(node);
-  node->Delete();
   return true;
 }
 
@@ -678,13 +666,22 @@ void vtkMRMLROS2NodeNode::SpinTf2Buffer(void)
 
 void vtkMRMLROS2NodeNode::Spin(void)
 {
+  if (!mInternals || !mInternals->mNodePointer) {
+    mSpinning = false;
+    return;
+  }
+
   if (rclcpp::ok()) {
     mSpinning = true;
     // for all ROS callbacks
     rclcpp::spin_some(mInternals->mNodePointer);
-    // parameters
-    for (auto & node : this->mParameterNodes) {
-      if (node != nullptr) {
+    // Resolve parameter nodes through MRML references. Raw pointers kept in a
+    // separate vector can outlive nodes removed from the scene.
+    const int parameterCount = this->GetNumberOfNodeReferences("parameter");
+    for (int index = 0; index < parameterCount; ++index) {
+      auto * node = vtkMRMLROS2ParameterNode::SafeDownCast(
+        this->GetNthNodeReference("parameter", index));
+      if (node) {
         node->Spin();
       }
     }

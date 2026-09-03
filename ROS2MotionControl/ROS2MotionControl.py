@@ -3316,7 +3316,7 @@ class ROS2MotionControlLogic(ScriptedLoadableModuleLogic):
             pass
 
 
-    def computeIKWithMoveIt(self, robotmodel, tipLink):
+    def computeIKWithMoveIt(self, robotmodel, tipLink, seedJointValues=None):
         """Compute IK via the MoveIt IK interface.
 
         Reads the current probe-to-root transform, calls ``robotmodel.ComputeMoveItIK``,
@@ -3353,7 +3353,11 @@ class ROS2MotionControlLogic(ScriptedLoadableModuleLogic):
             self._last_moveit_obstacle_publish_time = now
 
         ikLink, ikTargetPose = self.ConvertTipTargetToIKTarget(targetPose, tipLink)
-        seed = self.last_ik_solution
+        seed = (
+            list(seedJointValues)
+            if seedJointValues is not None
+            else self.last_ik_solution
+        )
         data = list(robotmodel.ComputeMoveItIK(ikTargetPose, ikLink, seed, 0.05))
         if not data:
             if DEBUG:

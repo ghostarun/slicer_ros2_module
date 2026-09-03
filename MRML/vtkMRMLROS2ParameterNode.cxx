@@ -17,6 +17,14 @@ vtkMRMLROS2ParameterNode::vtkMRMLROS2ParameterNode()
 
 vtkMRMLROS2ParameterNode::~vtkMRMLROS2ParameterNode()
 {
+  if (mInternals) {
+    // ROS futures may retain the internals after this MRML node is destroyed.
+    // Cancel callback sources and ensure retained callbacks cannot call back
+    // through a stale MRML pointer.
+    mInternals->mParameterEventSubscriber.reset();
+    mInternals->mParameterClient.reset();
+    mInternals->mMRMLNode = nullptr;
+  }
 }
 
 
@@ -51,6 +59,21 @@ const char *vtkMRMLROS2ParameterNode::GetNodeTagName(void)
 
 bool vtkMRMLROS2ParameterNode::AddToROS2Node(const char * nodeId, const std::string & monitoredNodeName)
 {
+  if (!nodeId) {
+    vtkErrorMacro(<< "AddToROS2Node: ROS2 node ID is null");
+    return false;
+  }
+
+  if (mInternals->mParameterClient) {
+    const char * currentNodeId = this->GetNodeReferenceID("node");
+    if (currentNodeId && std::string(currentNodeId) == nodeId &&
+        mMonitoredNodeName == monitoredNodeName) {
+      return true;
+    }
+    vtkErrorMacro(<< "AddToROS2Node: parameter node is already attached to another ROS2 node");
+    return false;
+  }
+
   mMonitoredNodeName = monitoredNodeName;
   mMRMLNodeName = "ros2:param:" + monitoredNodeName;
   this->SetName(mMRMLNodeName.c_str());
@@ -63,13 +86,27 @@ bool vtkMRMLROS2ParameterNode::AddToROS2Node(const char * nodeId, const std::str
   }
 
   std::shared_ptr<rclcpp::Node> nodePointer = mrmlROSNodePtr->mInternals->mNodePointer;
+  if (!nodePointer) {
+    vtkErrorMacro(<< "AddToROS2Node: ROS2 node has no internal rclcpp node");
+    return false;
+  }
   // create a parameter client
   mInternals->mParameterClient = std::make_shared<rclcpp::AsyncParametersClient>(nodePointer, monitoredNodeName);
-  // add this parameter node to the ROS node, so that it can be spin in the same thread as the ROS node
-  mrmlROSNodePtr->mParameterNodes.push_back(this);
-  mrmlROSNodePtr->SetNthNodeReferenceID("parameter",
-                                        mrmlROSNodePtr->GetNumberOfNodeReferences("parameter"),
-                                        this->GetID());
+  // Add a single MRML reference. The ROS node resolves these references while
+  // spinning, so deleted parameter nodes cannot leave dangling raw pointers.
+  bool alreadyReferenced = false;
+  const int parameterCount = mrmlROSNodePtr->GetNumberOfNodeReferences("parameter");
+  for (int index = 0; index < parameterCount; ++index) {
+    const char * referenceId = mrmlROSNodePtr->GetNthNodeReferenceID("parameter", index);
+    if (referenceId && this->GetID() && std::string(referenceId) == this->GetID()) {
+      alreadyReferenced = true;
+      break;
+    }
+  }
+  if (!alreadyReferenced) {
+    mrmlROSNodePtr->SetNthNodeReferenceID(
+      "parameter", parameterCount, this->GetID());
+  }
   this->SetNodeReferenceID("node", nodeId);
   mrmlROSNodePtr->WarnIfNotSpinning("adding parameter client for \"" + monitoredNodeName + "\"");
   mInternals->mMRMLNode = this;
@@ -91,12 +128,6 @@ bool vtkMRMLROS2ParameterNode::RemoveFromROS2Node(const char *nodeId)
     return false;
   }
 
-  // remove the parameter node from the ROS node
-  auto it = std::find(rosNodePtr->mParameterNodes.begin(), rosNodePtr->mParameterNodes.end(), this);
-  if (it != rosNodePtr->mParameterNodes.end()) {
-    rosNodePtr->mParameterNodes.erase(it);
-  }
-
   mInternals->mMRMLNode = nullptr;
   this->SetNodeReferenceID("node", nullptr);
 
@@ -105,7 +136,8 @@ bool vtkMRMLROS2ParameterNode::RemoveFromROS2Node(const char *nodeId)
   int numParams = rosNodePtr->GetNumberOfNodeReferences("parameter");
   for (int i = 0; i < numParams; ++i)
   {
-    if (std::string(rosNodePtr->GetNthNodeReferenceID("parameter", i)) == this->GetID())
+    const char * referenceId = rosNodePtr->GetNthNodeReferenceID("parameter", i);
+    if (referenceId && this->GetID() && std::string(referenceId) == this->GetID())
     {
       index = i;
       break;
@@ -118,6 +150,7 @@ bool vtkMRMLROS2ParameterNode::RemoveFromROS2Node(const char *nodeId)
 
   mInternals->mParameterEventSubscriber.reset();
   mInternals->mParameterClient.reset();
+  mIsParameterServerReady = false;
   return true;
 }
 
@@ -128,6 +161,11 @@ bool vtkMRMLROS2ParameterNode::Spin()
   // if it is already initialized, return true (was completed in a previous spin)
   if (this->mIsParameterServerReady) {
     return true;
+  }
+
+  if (!mInternals || !mInternals->mParameterClient) {
+    vtkWarningMacro(<< "Spin: parameter node is not attached to a ROS2 node");
+    return false;
   }
 
   if (!mInternals->mParameterClient->service_is_ready()) {
@@ -176,12 +214,17 @@ bool vtkMRMLROS2ParameterNode::IsAddedToROS2Node(void) const
 bool vtkMRMLROS2ParameterNode::IsMonitoredNodeReady(void) const
 {
   //todo: check if this is efficient - potentially add it to spin
-  return mInternals->mParameterClient->service_is_ready();
+  return mInternals && mInternals->mParameterClient &&
+    mInternals->mParameterClient->service_is_ready();
 }
 
 
 bool vtkMRMLROS2ParameterNode::AddParameter(const std::string &parameterName)
 {
+  if (!mInternals || !mInternals->mParameterClient) {
+    vtkErrorMacro(<< "AddParameter: parameter node is not attached to a ROS2 node");
+    return false;
+  }
   if (mInternals->mParameterStore.find(parameterName) != mInternals->mParameterStore.end()) {
     vtkWarningMacro(<< "AddParameter: parameter " << parameterName << " already exists");
     return false;
