@@ -1367,6 +1367,14 @@ vtkMatrix4x4* vtkMRMLROS2RobotNode::ComputeLocalTransform(const std::vector<doub
   if (targetSeg.getJoint().getType() != KDL::Joint::None) {
       if (kdlJointIndex < jointValues.size()) {
           q_val = jointValues[kdlJointIndex];
+      } else if (targetSeg.getJoint().getName()
+                   == "pneumatic_spindle-Copy_Revolute-6"
+                 && jointValues.size() + 1 == mInternals->KDLChain->getNrOfJoints()) {
+          // The visual KDL branch retains the external air-rotor joint for
+          // mesh/TF compatibility.  Planning callers now provide only J1-J5;
+          // the uncontrolled spindle contributes no commanded pose and is
+          // therefore evaluated at its neutral visual angle.
+          q_val = 0.0;
       } else {
           vtkErrorMacro(<< "Joint index out of bounds.");
           return nullptr;
@@ -1397,6 +1405,42 @@ vtkMatrix4x4* vtkMRMLROS2RobotNode::ComputeKDLFK(const std::vector<double>& join
   if (!outTransform) {
     vtkErrorMacro(<< "ComputeKDLFK: output transform is null");
     return nullptr;
+  }
+  // Step 6 uses the fixed, non-spinning TCP sibling of J6.  Its MoveIt group
+  // has five variables, while the legacy visual KDL chain still contains the
+  // downstream six-joint burr branch for the expert display.  Evaluate the
+  // canonical planning frame through the authoritative MoveIt state instead
+  // of trying to feed a five-value vector into that six-joint visual chain.
+  if (linkName == "dentobot_drill_tcp" && mInternals->RobotModelPtr &&
+      mInternals->JointModelGroupPtr &&
+      (jointValues.size() == mInternals->JointModelGroupPtr->getVariableCount() ||
+       jointValues.size() == mInternals->JointModelGroupPtr->getVariableCount() + 1)) {
+    try {
+      // Accept one legacy six-value visual vector at this compatibility
+      // boundary, but never pass its external-spindle slot to MoveIt.  The
+      // canonical TCP is upstream of J6, so the historical sixth value has no
+      // effect on this FK result.
+      std::vector<double> planning_joint_values(
+        jointValues.begin(),
+        jointValues.begin() + mInternals->JointModelGroupPtr->getVariableCount());
+      moveit::core::RobotState planning_state(mInternals->RobotModelPtr);
+      planning_state.setJointGroupPositions(mInternals->JointModelGroupPtr, planning_joint_values);
+      planning_state.update();
+      const Eigen::Isometry3d transform = planning_state.getGlobalLinkTransform(linkName);
+      outTransform->Identity();
+      for (int row = 0; row < 3; ++row) {
+        for (int column = 0; column < 3; ++column) {
+          outTransform->SetElement(row, column, transform.linear()(row, column));
+        }
+        outTransform->SetElement(row, 3, transform.translation()(row));
+      }
+      vtkMRMLROS2::FromSI(outTransform);
+      return outTransform;
+    }
+    catch (const std::exception& exception) {
+      vtkErrorMacro(<< "ComputeKDLFK: canonical planning TCP FK failed - " << exception.what());
+      return nullptr;
+    }
   }
   if (!mInternals->KDLChain || !mInternals->KDLFkSolver) {
     vtkWarningMacro(<< "ComputeKDLFK: KDL chain or FK solver not initialized");
