@@ -52,7 +52,8 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2MotionControlNode: public vt
                                                       const std::vector<double> & goalJointValues,
                                                       double velocityScaling     = 0.5,
                                                       double accelerationScaling = 0.5,
-                                                      double planningTimeSec     = 5.0);
+                                                      double planningTimeSec     = 5.0,
+                                                      const std::string & plannerId = "");
 
   /** Plan a joint-space trajectory from an explicit immutable start state.
    *
@@ -69,10 +70,14 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2MotionControlNode: public vt
       const std::vector<double> & goalJointValues,
       double velocityScaling     = 0.5,
       double accelerationScaling = 0.5,
-      double planningTimeSec     = 5.0);
+      double planningTimeSec     = 5.0,
+      const std::string & plannerId = "");
 
   /** Human-readable result from the most recent joint-space plan request. */
   std::string GetLastJointPlanMessage() const;
+
+  /** Effective planner ID reported by MoveIt for the most recent request. */
+  std::string GetLastJointPlannerId() const;
 
   /** Query MoveIt's current PlanningScene for one explicit joint state.
    *  This is read-only: it does not change the monitored robot state, publish

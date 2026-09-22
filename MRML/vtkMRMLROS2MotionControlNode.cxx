@@ -68,6 +68,7 @@ struct vtkMRMLROS2MotionControlNodeInternals
   std::string LastStateValidityMessage;
   std::string LastForwardKinematicsMessage;
   std::string LastJointPlanMessage;
+  std::string LastJointPlannerId;
 };
 
 // ── vtkStandardNewMacro ──────────────────────────────────────────────────────
@@ -128,9 +129,11 @@ vtkMoveitMsgsRobotTrajectory* vtkMRMLROS2MotionControlNode::PlanMoveItTrajectory
     const std::vector<double> & goalJointValues,
     double velocityScaling,
     double accelerationScaling,
-    double planningTimeSec)
+    double planningTimeSec,
+    const std::string & plannerId)
 {
   mInternals->LastJointPlanMessage.clear();
+  mInternals->LastJointPlannerId.clear();
   vtkMoveitMsgsRobotTrajectory* traj = vtkMoveitMsgsRobotTrajectory::New();
 
   auto node = GetROSNodePointer();
@@ -142,6 +145,10 @@ vtkMoveitMsgsRobotTrajectory* vtkMRMLROS2MotionControlNode::PlanMoveItTrajectory
   }
 
   moveit::planning_interface::MoveGroupInterface moveGroup(node, groupName);
+  if (!plannerId.empty()) {
+    moveGroup.setPlannerId(plannerId);
+  }
+  mInternals->LastJointPlannerId = moveGroup.getPlannerId();
 
   const auto jointNames = moveGroup.getJointNames();
   if (jointNames.size() != goalJointValues.size()) {
@@ -189,9 +196,11 @@ vtkMoveitMsgsRobotTrajectory* vtkMRMLROS2MotionControlNode::PlanMoveItTrajectory
     const std::vector<double> & goalJointValues,
     double velocityScaling,
     double accelerationScaling,
-    double planningTimeSec)
+    double planningTimeSec,
+    const std::string & plannerId)
 {
   mInternals->LastJointPlanMessage.clear();
+  mInternals->LastJointPlannerId.clear();
   vtkMoveitMsgsRobotTrajectory* traj = vtkMoveitMsgsRobotTrajectory::New();
 
   auto node = GetROSNodePointer();
@@ -217,6 +226,10 @@ vtkMoveitMsgsRobotTrajectory* vtkMRMLROS2MotionControlNode::PlanMoveItTrajectory
   }
 
   moveit::planning_interface::MoveGroupInterface moveGroup(node, groupName);
+  if (!plannerId.empty()) {
+    moveGroup.setPlannerId(plannerId);
+  }
+  mInternals->LastJointPlannerId = moveGroup.getPlannerId();
   const auto groupJointNames = moveGroup.getJointNames();
   if (groupJointNames.size() != goalJointValues.size()) {
     mInternals->LastJointPlanMessage =
@@ -305,6 +318,11 @@ vtkMoveitMsgsRobotTrajectory* vtkMRMLROS2MotionControlNode::PlanMoveItTrajectory
 std::string vtkMRMLROS2MotionControlNode::GetLastJointPlanMessage() const
 {
   return mInternals->LastJointPlanMessage;
+}
+
+std::string vtkMRMLROS2MotionControlNode::GetLastJointPlannerId() const
+{
+  return mInternals->LastJointPlannerId;
 }
 
 bool vtkMRMLROS2MotionControlNode::CheckMoveItStateValidity(
