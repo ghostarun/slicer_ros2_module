@@ -98,6 +98,13 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   std::vector<std::string> GetMoveItCollidingBodyPairs(
     const std::string& groupName,
     const std::vector<double>& jointValues);
+  /** Read-only evidence from the same MoveIt scene used by collision queries. */
+  std::vector<std::string> GetMoveItSceneGeometryDiagnostic(
+    const std::string& objectId);
+  /** Compare whole-robot contact with the group-filtered diagnostic. */
+  std::vector<std::string> GetMoveItWholeRobotCollidingBodyPairs(
+    const std::string& groupName,
+    const std::vector<double>& jointValues);
 
   // KDL Setup and IK methods
   bool SetupKDLIKWithLimits(void);

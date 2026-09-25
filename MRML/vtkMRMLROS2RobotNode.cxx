@@ -1335,6 +1335,66 @@ std::vector<std::string> vtkMRMLROS2RobotNode::GetMoveItCollidingBodyPairs(
   return pairs;
 }
 
+std::vector<std::string> vtkMRMLROS2RobotNode::GetMoveItSceneGeometryDiagnostic(
+  const std::string& objectId)
+{
+  std::vector<std::string> evidence;
+  if (!mInternals->RobotModelPtr || !mInternals->PlanningSceneMonitorPtr)
+  {
+    evidence.emplace_back("scene=unavailable");
+    return evidence;
+  }
+  planning_scene_monitor::LockedPlanningSceneRO scene(
+    mInternals->PlanningSceneMonitorPtr);
+  if (!scene)
+  {
+    evidence.emplace_back("scene=unavailable");
+    return evidence;
+  }
+  const auto object = scene->getWorld()->getObject(objectId);
+  evidence.emplace_back(std::string("probe_present=") + (object ? "true" : "false"));
+  if (object)
+  {
+    evidence.emplace_back("probe_shapes=" + std::to_string(object->shapes_.size()));
+    const auto& position = object->pose_.translation();
+    evidence.emplace_back("probe_pose_xyz_m=" + std::to_string(position.x()) + "," +
+      std::to_string(position.y()) + "," + std::to_string(position.z()));
+  }
+  for (const auto* link : mInternals->RobotModelPtr->getLinkModelsWithCollisionGeometry())
+  {
+    evidence.emplace_back("link=" + link->getName() + ":shapes=" +
+      std::to_string(link->getShapes().size()));
+  }
+  return evidence;
+}
+
+std::vector<std::string> vtkMRMLROS2RobotNode::GetMoveItWholeRobotCollidingBodyPairs(
+  const std::string& groupName,
+  const std::vector<double>& jointValues)
+{
+  std::vector<std::string> pairs;
+  if (!mInternals->RobotModelPtr || !mInternals->PlanningSceneMonitorPtr)
+    return pairs;
+  const auto* group = mInternals->RobotModelPtr->getJointModelGroup(groupName);
+  if (!group || jointValues.size() != group->getVariableCount())
+    return pairs;
+  planning_scene_monitor::LockedPlanningSceneRO scene(mInternals->PlanningSceneMonitorPtr);
+  if (!scene)
+    return pairs;
+  moveit::core::RobotState state(scene->getCurrentState());
+  state.setJointGroupPositions(group, jointValues);
+  state.update();
+  collision_detection::CollisionRequest request;
+  request.contacts = true;
+  request.max_contacts = 100;
+  request.max_contacts_per_pair = 1;
+  collision_detection::CollisionResult result;
+  scene->checkCollision(request, result, state);
+  for (const auto& contact : result.contacts)
+    pairs.push_back(contact.first.first + "\t" + contact.first.second);
+  return pairs;
+}
+
 
 bool vtkMRMLROS2RobotNode::SetupKDLIKWithLimits(void)
 {
