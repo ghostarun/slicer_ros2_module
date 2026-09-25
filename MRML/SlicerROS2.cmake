@@ -108,7 +108,8 @@ function(generate_ros2_object _object_tag _object _files_generated_prefix)
   set(_generator "${CMAKE_CURRENT_SOURCE_DIR}/CodeGeneration/ROS2_to_vtkObjects.py")
 
   # check if files exist
-  if (NOT EXISTS ${_h_file} OR NOT EXISTS ${_cxx_file})
+  if (NOT EXISTS "${_h_file}" OR NOT EXISTS "${_cxx_file}" OR
+      "${_generator}" IS_NEWER_THAN "${_cxx_file}")
     execute_process(
       COMMAND ${_generator} ${_object_tag} ${_object} -c ${_class_name} -d "${CMAKE_CURRENT_BINARY_DIR}"
       WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
@@ -133,7 +134,8 @@ function(generate_ros2_message _msg _files_generated_prefix)
   set(_cxx_file "${CMAKE_CURRENT_BINARY_DIR}/${_class_name}.cxx")
   set(_generator "${CMAKE_CURRENT_SOURCE_DIR}/CodeGeneration/ROS2_to_vtkObjects.py")
   # check if files exist
-  if (NOT EXISTS ${_h_file} OR NOT EXISTS ${_cxx_file})
+  if (NOT EXISTS "${_h_file}" OR NOT EXISTS "${_cxx_file}" OR
+      "${_generator}" IS_NEWER_THAN "${_cxx_file}")
     execute_process(
       COMMAND ${_generator} -m ${_msg} -c ${_class_name} -d "${CMAKE_CURRENT_BINARY_DIR}"
       WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
