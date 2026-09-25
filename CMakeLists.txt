@@ -182,7 +182,15 @@ slicerMacroBuildLoadableModule(
   RESOURCES ${MODULE_RESOURCES}
   )
 
-if(BUILD_TESTING)
+# ROS2Tests is upstream SlicerROS2 self-test code (requires psutil). It is not
+# used by DENTOWorkflow or Step 6 runtime. Default OFF so Slicer does not try
+# to instantiate it on every launch.
+option(
+  SLICER_ROS2_INSTALL_SCRIPTED_TESTS
+  "Install the ROS2Tests scripted module into qt-scripted-modules"
+  OFF
+)
+if(SLICER_ROS2_INSTALL_SCRIPTED_TESTS)
   add_subdirectory(Testing)
 endif()
 

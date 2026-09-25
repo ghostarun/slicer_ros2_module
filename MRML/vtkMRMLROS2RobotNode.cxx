@@ -31,6 +31,9 @@
 #include <map>
 #include <thread>
 #include <queue>
+#include <cmath>
+#include <limits>
+#include <sstream>
 
 #include <vtkMoveitMsgsRobotTrajectory.h>
 #include <vtkROS2ToSlicer.h>
@@ -45,6 +48,8 @@
 // ROS2 parameter client for reading remote node parameters
 #include <rclcpp/parameter_client.hpp>
 #include <chrono>
+#include <eigen3/Eigen/Cholesky>
+#include <eigen3/Eigen/SVD>
 
 // KDL includes
 #include <kdl/chain.hpp>
@@ -922,6 +927,364 @@ std::vector<double> vtkMRMLROS2RobotNode::ComputeMoveItIK(vtkMatrix4x4* targetPo
     vtkErrorMacro(<< "ComputeMoveItIK: exception - " << e.what());
     return {};
   }
+}
+
+std::vector<double> vtkMRMLROS2RobotNode::ComputeMoveItPositionAxisIK(
+  vtkMatrix4x4* targetPose,
+  const std::string& tipLink,
+  const std::vector<double>& seedJointValues,
+  double timeout,
+  bool avoidCollisions)
+{
+  mInternals->LastPositionAxisIKMessage.clear();
+  mInternals->LastPositionAxisIKPositionResidualMm = -1.0;
+  mInternals->LastPositionAxisIKAxisResidualDeg = -1.0;
+  mInternals->LastPositionAxisIKBestJointValues.clear();
+  mLastMoveItPositionAxisIKTerminationReason = "not_initialized";
+  mLastMoveItPositionAxisIKIterationCount = 0;
+  mLastMoveItPositionAxisIKCollisionCheckStatus =
+    avoidCollisions ? "not_attempted" : "not_requested";
+  mLastMoveItPositionAxisIKConditionRatio = -1.0;
+  if (!mInternals->RobotModelPtr || !mInternals->JointModelGroupPtr)
+  {
+    mInternals->LastPositionAxisIKMessage = "MoveIt position-axis IK is not initialized.";
+    return {};
+  }
+  if (!targetPose)
+  {
+    mLastMoveItPositionAxisIKTerminationReason = "invalid_input";
+    mInternals->LastPositionAxisIKMessage = "MoveIt position-axis IK is not initialized.";
+    return {};
+  }
+
+  try
+  {
+    const moveit::core::LinkModel* tipModel = mInternals->RobotModelPtr->getLinkModel(tipLink);
+    const std::size_t variableCount = mInternals->JointModelGroupPtr->getVariableCount();
+    if (!tipModel || variableCount == 0 ||
+        (!seedJointValues.empty() && seedJointValues.size() != variableCount))
+    {
+      mLastMoveItPositionAxisIKTerminationReason = "invalid_input";
+      mInternals->LastPositionAxisIKMessage = "MoveIt position-axis IK received an invalid tip or seed.";
+      return {};
+    }
+
+    vtkNew<vtkMatrix4x4> targetPoseSI;
+    targetPoseSI->DeepCopy(targetPose);
+    vtkMRMLROS2::ToSI(targetPoseSI);
+    const Eigen::Vector3d targetPosition(
+      targetPoseSI->GetElement(0, 3),
+      targetPoseSI->GetElement(1, 3),
+      targetPoseSI->GetElement(2, 3));
+    Eigen::Vector3d targetAxis(
+      targetPoseSI->GetElement(0, 2),
+      targetPoseSI->GetElement(1, 2),
+      targetPoseSI->GetElement(2, 2));
+    if (!targetPosition.allFinite() || !targetAxis.allFinite() || targetAxis.norm() < 1.0e-12)
+    {
+      mLastMoveItPositionAxisIKTerminationReason = "invalid_target";
+      mInternals->LastPositionAxisIKMessage = "MoveIt position-axis IK target is non-finite or degenerate.";
+      return {};
+    }
+    targetAxis.normalize();
+    mLastMoveItPositionAxisIKTerminationReason = "iteration_limit";
+    if (avoidCollisions)
+    {
+      mLastMoveItPositionAxisIKCollisionCheckStatus =
+        mInternals->PlanningSceneMonitorPtr ? "not_reached" : "unavailable";
+    }
+
+    moveit::core::RobotState state(mInternals->RobotModelPtr);
+    state.setToDefaultValues();
+    if (!seedJointValues.empty())
+    {
+      state.setJointGroupPositions(mInternals->JointModelGroupPtr, seedJointValues);
+    }
+    state.enforceBounds(mInternals->JointModelGroupPtr);
+    state.update();
+
+    constexpr double positionToleranceM = 0.00025;
+    const double axisToleranceRad = 0.5 * M_PI / 180.0;
+    constexpr int maximumIterations = 120;
+    constexpr double damping = 1.0e-3;
+    const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::duration<double>(std::max(0.01, timeout));
+    const std::vector<std::string>& variableNames =
+      mInternals->JointModelGroupPtr->getVariableNames();
+    std::vector<double> bestValues;
+    double bestPositionError = std::numeric_limits<double>::infinity();
+    double bestAxisError = std::numeric_limits<double>::infinity();
+    double bestScore = std::numeric_limits<double>::infinity();
+    std::vector<double> solution;
+
+    for (int iteration = 0;
+         iteration < maximumIterations && std::chrono::steady_clock::now() < deadline;
+         ++iteration)
+    {
+      mLastMoveItPositionAxisIKIterationCount = iteration + 1;
+      state.update();
+      const Eigen::Isometry3d& currentTransform = state.getGlobalLinkTransform(tipModel);
+      const Eigen::Vector3d currentAxis = currentTransform.linear().col(2).normalized();
+      const Eigen::Vector3d positionError = targetPosition - currentTransform.translation();
+      const double positionErrorM = positionError.norm();
+      const double axisErrorRad = std::acos(std::clamp(currentAxis.dot(targetAxis), -1.0, 1.0));
+      const double score = std::pow(positionErrorM / positionToleranceM, 2.0) +
+        std::pow(axisErrorRad / axisToleranceRad, 2.0);
+      if (score < bestScore)
+      {
+        bestScore = score;
+        bestPositionError = positionErrorM;
+        bestAxisError = axisErrorRad;
+        state.copyJointGroupPositions(mInternals->JointModelGroupPtr, bestValues);
+      }
+
+      if (positionErrorM <= positionToleranceM && axisErrorRad <= axisToleranceRad)
+      {
+        bool collisionFree = true;
+        if (avoidCollisions && mInternals->PlanningSceneMonitorPtr)
+        {
+          try
+          {
+            planning_scene_monitor::LockedPlanningSceneRO planningScene(
+              mInternals->PlanningSceneMonitorPtr);
+            if (planningScene)
+            {
+              moveit::core::RobotState collisionState(planningScene->getCurrentState());
+              std::vector<double> values;
+              state.copyJointGroupPositions(mInternals->JointModelGroupPtr, values);
+              collisionState.setJointGroupPositions(mInternals->JointModelGroupPtr, values);
+              collisionState.update();
+              collisionFree = !planningScene->isStateColliding(
+                collisionState, mInternals->JointModelGroupPtr->getName());
+              mLastMoveItPositionAxisIKCollisionCheckStatus =
+                collisionFree ? "clear" : "colliding";
+            }
+            else
+            {
+              mLastMoveItPositionAxisIKCollisionCheckStatus = "unavailable";
+              collisionFree = false;
+            }
+          }
+          catch (...)
+          {
+            mLastMoveItPositionAxisIKCollisionCheckStatus = "unavailable";
+            throw;
+          }
+        }
+        else if (avoidCollisions)
+        {
+          mLastMoveItPositionAxisIKCollisionCheckStatus = "unavailable";
+          collisionFree = false;
+        }
+        std::vector<double> values;
+        state.copyJointGroupPositions(mInternals->JointModelGroupPtr, values);
+        mInternals->LastPositionAxisIKBestJointValues = values;
+        mInternals->LastPositionAxisIKPositionResidualMm = positionErrorM * 1000.0;
+        mInternals->LastPositionAxisIKAxisResidualDeg = axisErrorRad * 180.0 / M_PI;
+        if (!collisionFree)
+        {
+          const bool collisionCheckUnavailable =
+            mLastMoveItPositionAxisIKCollisionCheckStatus == "unavailable";
+          mLastMoveItPositionAxisIKTerminationReason =
+            collisionCheckUnavailable ? "collision_check_unavailable" : "colliding";
+          mInternals->LastPositionAxisIKMessage = collisionCheckUnavailable
+            ? "Position-axis IK converged within tolerance but collision checking was unavailable."
+            : "Position-axis IK converged within tolerance but the endpoint is colliding.";
+        }
+        else
+        {
+          mLastMoveItPositionAxisIKTerminationReason = "converged";
+          mInternals->LastPositionAxisIKMessage =
+            "Position-axis IK converged using J1-J5; axial tool roll was unconstrained.";
+          solution = values;
+        }
+        break;
+      }
+
+      Eigen::MatrixXd geometricJacobian;
+      if (!state.getJacobian(
+            mInternals->JointModelGroupPtr,
+            tipModel,
+            Eigen::Vector3d::Zero(),
+            geometricJacobian) ||
+          geometricJacobian.rows() != 6 ||
+          geometricJacobian.cols() != static_cast<Eigen::Index>(variableCount))
+      {
+        mLastMoveItPositionAxisIKTerminationReason = "jacobian_failure";
+        mInternals->LastPositionAxisIKMessage = "MoveIt could not compute the position-axis Jacobian.";
+        break;
+      }
+
+      // Translation contributes three constraints.  Project angular velocity
+      // into the plane normal to the requested drill axis; the omitted axial
+      // component is the intentionally free housing-roll task dimension.
+      const Eigen::Matrix3d axisProjector =
+        Eigen::Matrix3d::Identity() - targetAxis * targetAxis.transpose();
+      Eigen::MatrixXd taskJacobian(6, variableCount);
+      taskJacobian.topRows(3) = geometricJacobian.topRows(3) / positionToleranceM;
+      taskJacobian.bottomRows(3) =
+        axisProjector * geometricJacobian.bottomRows(3) / axisToleranceRad;
+      Eigen::VectorXd taskError(6);
+      taskError.head(3) = positionError / positionToleranceM;
+      taskError.tail(3) = currentAxis.cross(targetAxis) / axisToleranceRad;
+      Eigen::MatrixXd normal = taskJacobian.transpose() * taskJacobian;
+      normal.diagonal().array() += damping * damping;
+      Eigen::VectorXd delta = normal.ldlt().solve(taskJacobian.transpose() * taskError);
+      if (!delta.allFinite())
+      {
+        mLastMoveItPositionAxisIKTerminationReason = "nonfinite_step";
+        mInternals->LastPositionAxisIKMessage = "MoveIt position-axis IK produced a non-finite update.";
+        break;
+      }
+
+      double stepScale = 1.0;
+      for (std::size_t index = 0; index < variableCount; ++index)
+      {
+        const moveit::core::JointModel* joint =
+          mInternals->RobotModelPtr->getJointOfVariable(variableNames[index]);
+        const double maximumStep =
+          joint && joint->getType() == moveit::core::JointModel::PRISMATIC ? 0.002 : 0.10;
+        if (std::abs(delta[static_cast<Eigen::Index>(index)]) > maximumStep)
+        {
+          stepScale = std::min(
+            stepScale,
+            maximumStep / std::abs(delta[static_cast<Eigen::Index>(index)]));
+        }
+      }
+      if (delta.norm() * stepScale < 1.0e-12)
+      {
+        mLastMoveItPositionAxisIKTerminationReason = "stalled";
+        mInternals->LastPositionAxisIKMessage = "MoveIt position-axis IK stalled before reaching tolerance.";
+        break;
+      }
+      std::vector<double> values;
+      state.copyJointGroupPositions(mInternals->JointModelGroupPtr, values);
+      for (std::size_t index = 0; index < variableCount; ++index)
+      {
+        values[index] += stepScale * delta[static_cast<Eigen::Index>(index)];
+      }
+      state.setJointGroupPositions(mInternals->JointModelGroupPtr, values);
+      state.enforceBounds(mInternals->JointModelGroupPtr);
+    }
+
+    if (mLastMoveItPositionAxisIKTerminationReason == "iteration_limit")
+    {
+      if (mLastMoveItPositionAxisIKIterationCount < maximumIterations)
+      {
+        mLastMoveItPositionAxisIKTerminationReason = "timeout";
+      }
+    }
+    if (mLastMoveItPositionAxisIKTerminationReason != "converged" &&
+        mLastMoveItPositionAxisIKTerminationReason != "colliding")
+    {
+      mInternals->LastPositionAxisIKBestJointValues = bestValues;
+      mInternals->LastPositionAxisIKPositionResidualMm =
+        std::isfinite(bestPositionError) ? bestPositionError * 1000.0 : -1.0;
+      mInternals->LastPositionAxisIKAxisResidualDeg =
+        std::isfinite(bestAxisError) ? bestAxisError * 180.0 / M_PI : -1.0;
+      if (mLastMoveItPositionAxisIKTerminationReason == "timeout" ||
+          mLastMoveItPositionAxisIKTerminationReason == "iteration_limit")
+      {
+        std::ostringstream message;
+        message << "Position-axis IK did not reach tolerance; best residuals were "
+                << mInternals->LastPositionAxisIKPositionResidualMm << " mm and "
+                << mInternals->LastPositionAxisIKAxisResidualDeg << " deg.";
+        mInternals->LastPositionAxisIKMessage = message.str();
+      }
+    }
+
+    // This diagnostic is deliberately computed once, after the solve, at its
+    // best found state. It must not affect the solve result or iteration path.
+    try
+    {
+      constexpr std::size_t taskVariableCount = 5;
+      if (bestValues.size() == taskVariableCount)
+      {
+        moveit::core::RobotState bestState(mInternals->RobotModelPtr);
+        bestState.setToDefaultValues();
+        bestState.setJointGroupPositions(mInternals->JointModelGroupPtr, bestValues);
+        bestState.update();
+        Eigen::MatrixXd geometricJacobian;
+        if (bestState.getJacobian(
+              mInternals->JointModelGroupPtr,
+              tipModel,
+              Eigen::Vector3d::Zero(),
+              geometricJacobian) &&
+            geometricJacobian.rows() == 6 && geometricJacobian.cols() == 5)
+        {
+          const Eigen::Matrix3d axisProjector =
+            Eigen::Matrix3d::Identity() - targetAxis * targetAxis.transpose();
+          Eigen::MatrixXd taskJacobian(6, 5);
+          taskJacobian.topRows(3) = geometricJacobian.topRows(3) / positionToleranceM;
+          taskJacobian.bottomRows(3) =
+            axisProjector * geometricJacobian.bottomRows(3) / axisToleranceRad;
+          const Eigen::JacobiSVD<Eigen::MatrixXd> decomposition(taskJacobian);
+          const Eigen::VectorXd singularValues = decomposition.singularValues();
+          if (singularValues.size() == 5 && singularValues.allFinite() &&
+              singularValues[0] > 0.0)
+          {
+            const double ratio = singularValues[4] / singularValues[0];
+            if (std::isfinite(ratio))
+            {
+              mLastMoveItPositionAxisIKConditionRatio = std::clamp(ratio, 0.0, 1.0);
+            }
+          }
+        }
+      }
+    }
+    catch (...)
+    {
+      mLastMoveItPositionAxisIKConditionRatio = -1.0;
+    }
+    return solution;
+  }
+  catch (const std::exception& exception)
+  {
+    mLastMoveItPositionAxisIKTerminationReason = "exception";
+    mInternals->LastPositionAxisIKMessage =
+      std::string("MoveIt position-axis IK exception: ") + exception.what();
+    return {};
+  }
+}
+
+std::string vtkMRMLROS2RobotNode::GetLastMoveItPositionAxisIKMessage() const
+{
+  return mInternals->LastPositionAxisIKMessage;
+}
+
+double vtkMRMLROS2RobotNode::GetLastMoveItPositionAxisIKPositionResidualMm() const
+{
+  return mInternals->LastPositionAxisIKPositionResidualMm;
+}
+
+double vtkMRMLROS2RobotNode::GetLastMoveItPositionAxisIKAxisResidualDeg() const
+{
+  return mInternals->LastPositionAxisIKAxisResidualDeg;
+}
+
+std::vector<double> vtkMRMLROS2RobotNode::GetLastMoveItPositionAxisIKBestJointValues() const
+{
+  return mInternals->LastPositionAxisIKBestJointValues;
+}
+
+std::string vtkMRMLROS2RobotNode::GetLastMoveItPositionAxisIKTerminationReason() const
+{
+  return mLastMoveItPositionAxisIKTerminationReason;
+}
+
+int vtkMRMLROS2RobotNode::GetLastMoveItPositionAxisIKIterationCount() const
+{
+  return mLastMoveItPositionAxisIKIterationCount;
+}
+
+std::string vtkMRMLROS2RobotNode::GetLastMoveItPositionAxisIKCollisionCheckStatus() const
+{
+  return mLastMoveItPositionAxisIKCollisionCheckStatus;
+}
+
+double vtkMRMLROS2RobotNode::GetLastMoveItPositionAxisIKConditionRatio() const
+{
+  return mLastMoveItPositionAxisIKConditionRatio;
 }
 
 std::vector<std::string> vtkMRMLROS2RobotNode::GetMoveItCollidingBodyPairs(

@@ -3316,7 +3316,14 @@ class ROS2MotionControlLogic(ScriptedLoadableModuleLogic):
             pass
 
 
-    def computeIKWithMoveIt(self, robotmodel, tipLink, seedJointValues=None):
+    def computeIKWithMoveIt(
+        self,
+        robotmodel,
+        tipLink,
+        seedJointValues=None,
+        positionAxisOnly=False,
+        avoidCollisions=True,
+    ):
         """Compute IK via the MoveIt IK interface.
 
         Reads the current probe-to-root transform, calls ``robotmodel.ComputeMoveItIK``,
@@ -3326,6 +3333,8 @@ class ROS2MotionControlLogic(ScriptedLoadableModuleLogic):
         Args:
             robotmodel: ``vtkMRMLROS2RobotNode``.
             tipLink:    Name of the end-effector TF link MoveIt should plan to.
+            positionAxisOnly: Solve XYZ plus tool +Z and leave axial roll free.
+            avoidCollisions: Reject a converged endpoint in the planning scene.
 
         Returns:
             List of joint angles in radians, or ``None`` if no solution found.
@@ -3358,7 +3367,18 @@ class ROS2MotionControlLogic(ScriptedLoadableModuleLogic):
             if seedJointValues is not None
             else self.last_ik_solution
         )
-        data = list(robotmodel.ComputeMoveItIK(ikTargetPose, ikLink, seed, 0.05))
+        if positionAxisOnly:
+            data = list(
+                robotmodel.ComputeMoveItPositionAxisIK(
+                    ikTargetPose,
+                    ikLink,
+                    seed,
+                    0.2,
+                    bool(avoidCollisions),
+                )
+            )
+        else:
+            data = list(robotmodel.ComputeMoveItIK(ikTargetPose, ikLink, seed, 0.05))
         if not data:
             if DEBUG:
                 print(f"[IK] Empty result from ComputeMoveItIK")

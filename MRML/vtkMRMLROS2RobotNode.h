@@ -74,6 +74,24 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
                                       const std::vector<double>& seedJointValues,
                                       double timeout = 1.0,
                                       bool avoidCollisions = true);
+  /** Solve TCP position plus tool +Z direction while leaving axial roll free.
+   *  This is the appropriate five-dimensional task for an underactuated drill
+   *  arm whose pneumatic spindle roll is not a commanded positioning DOF.
+   */
+  std::vector<double> ComputeMoveItPositionAxisIK(
+    vtkMatrix4x4* targetPose,
+    const std::string& tipLink,
+    const std::vector<double>& seedJointValues,
+    double timeout = 1.0,
+    bool avoidCollisions = true);
+  std::string GetLastMoveItPositionAxisIKMessage() const;
+  double GetLastMoveItPositionAxisIKPositionResidualMm() const;
+  double GetLastMoveItPositionAxisIKAxisResidualDeg() const;
+  std::vector<double> GetLastMoveItPositionAxisIKBestJointValues() const;
+  std::string GetLastMoveItPositionAxisIKTerminationReason() const;
+  int GetLastMoveItPositionAxisIKIterationCount() const;
+  std::string GetLastMoveItPositionAxisIKCollisionCheckStatus() const;
+  double GetLastMoveItPositionAxisIKConditionRatio() const;
   /** Return colliding body pairs for a diagnostic-only joint state.
    *  Each entry is encoded as "body_a\tbody_b" for Python wrapping.
    */
@@ -119,6 +137,13 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
 
   void ObserveParameterNodeCallback( vtkObject* caller, unsigned long, void* vtkNotUsed(callData));
 
+ private:
+  std::string mLastMoveItPositionAxisIKTerminationReason = "not_initialized";
+  int mLastMoveItPositionAxisIKIterationCount = 0;
+  std::string mLastMoveItPositionAxisIKCollisionCheckStatus = "not_attempted";
+  double mLastMoveItPositionAxisIKConditionRatio = -1.0;
+
+ protected:
   vtkSmartPointer<vtkMRMLROS2ParameterNode> mRobotDescriptionParameterNode;
 
   std::string mRobotName = "undefined";

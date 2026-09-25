@@ -58,6 +58,10 @@ class vtkMRMLROS2RobotNodeInternals
   const moveit::core::JointModelGroup* JointModelGroupPtr = nullptr;
   planning_scene_monitor::PlanningSceneMonitorPtr PlanningSceneMonitorPtr;
   std::string IKGroupName;
+  std::string LastPositionAxisIKMessage;
+  double LastPositionAxisIKPositionResidualMm = -1.0;
+  double LastPositionAxisIKAxisResidualDeg = -1.0;
+  std::vector<double> LastPositionAxisIKBestJointValues;
 
   // KDL solvers
   std::unique_ptr<KDL::Chain> KDLChain;
