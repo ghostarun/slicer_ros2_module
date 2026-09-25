@@ -32,7 +32,7 @@ const char * vtkMRMLROS2NodeNode::GetNodeTagName(void)
 vtkMRMLROS2NodeNode::vtkMRMLROS2NodeNode()
 {
   mInternals = std::make_unique<vtkMRMLROS2NodeInternals>();
-  mTemporaryMatrix = vtkMatrix4x4::New();
+  mTemporaryMatrix = vtkSmartPointer<vtkMatrix4x4>::New();
 }
 
 
@@ -135,10 +135,11 @@ vtkMRMLROS2SubscriberNode * vtkMRMLROS2NodeNode::CreateAndAddSubscriberNode(cons
     return nullptr;
   }
   // CreateNodeByClass
-  vtkSmartPointer<vtkMRMLNode> node = this->GetScene()->CreateNodeByClass(className);
+  vtkSmartPointer<vtkMRMLNode> node;
+  node.TakeReference(this->GetScene()->CreateNodeByClass(className));
   if (node == nullptr) {
     const std::string fromShortName = "vtkMRMLROS2Subscriber" + std::string(className) + "Node";
-    node = this->GetScene()->CreateNodeByClass(fromShortName.c_str());
+    node.TakeReference(this->GetScene()->CreateNodeByClass(fromShortName.c_str()));
     if (node == nullptr) {
       vtkErrorMacro(<< "CreateAndAddSubscriber: neither \"" << className << "\" nor \"" << fromShortName << "\" is a node type, supported types are: " << RegisteredROS2SubscriberNodes());
       return nullptr;
@@ -169,10 +170,11 @@ vtkMRMLROS2PublisherNode * vtkMRMLROS2NodeNode::CreateAndAddPublisherNode(const 
     return nullptr;
   }
   // CreateNodeByClass
-  vtkSmartPointer<vtkMRMLNode> node = this->GetScene()->CreateNodeByClass(className);
+  vtkSmartPointer<vtkMRMLNode> node;
+  node.TakeReference(this->GetScene()->CreateNodeByClass(className));
   const std::string fromShortName = "vtkMRMLROS2Publisher" + std::string(className) + "Node";
   if (node == nullptr) {
-    node = this->GetScene()->CreateNodeByClass(fromShortName.c_str());
+    node.TakeReference(this->GetScene()->CreateNodeByClass(fromShortName.c_str()));
     if (node == nullptr) {
       vtkErrorMacro(<< "CreateAndAddPublisher: neither \"" << className << "\" nor \"" << fromShortName << "\" is a node type, supported types are: " << RegisteredROS2PublisherNodes());
       return nullptr;
@@ -293,10 +295,11 @@ vtkMRMLROS2ServiceClientNode * vtkMRMLROS2NodeNode::CreateAndAddServiceClientNod
     return nullptr;
   }
   // CreateNodeByClass
-  vtkSmartPointer<vtkMRMLNode> node = this->GetScene()->CreateNodeByClass(className);
+  vtkSmartPointer<vtkMRMLNode> node;
+  node.TakeReference(this->GetScene()->CreateNodeByClass(className));
   const std::string fromShortName = "vtkMRMLROS2ServiceClient" + std::string(className) + "Node";
   if (node == nullptr) {
-    node = this->GetScene()->CreateNodeByClass(fromShortName.c_str());
+    node.TakeReference(this->GetScene()->CreateNodeByClass(fromShortName.c_str()));
     if (node == nullptr) {
       vtkErrorMacro(<< "CreateAndAddServiceClient: neither \"" << className << "\" nor \"" << fromShortName << "\" is a node type, supported types are: " << RegisteredROS2ServiceClientNodes());
       return nullptr;
