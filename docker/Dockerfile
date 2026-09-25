@@ -107,7 +107,11 @@ WORKDIR /opt/slicer
 # Clone Slicer at pinned tag (shallow clone to save disk & time)
 RUN git clone --depth 1 --branch ${SLICER_TAG} \
   https://github.com/Slicer/Slicer.git \
-  /opt/slicer/Slicer
+  /opt/slicer/Slicer \
+  && test "$(grep -Fo -- '-DCURL_DISABLE_FILE:BOOL=ON' \
+    /opt/slicer/Slicer/SuperBuild/External_curl.cmake | wc -l)" -eq 1 \
+  && sed -i 's/-DCURL_DISABLE_FILE:BOOL=ON/-DCURL_DISABLE_FILE:BOOL=OFF/' \
+    /opt/slicer/Slicer/SuperBuild/External_curl.cmake
 
 # Superbuild configuration.
 #
@@ -127,9 +131,10 @@ RUN mkdir -p /opt/slicer/Slicer-SuperBuild && \
   -S /opt/slicer/Slicer \
   -B /opt/slicer/Slicer-SuperBuild
 
-# Build — use all CPUs but cap memory via NINJAJOBS if needed.
+# Bound parallel compilation on workstations with limited memory.
 # The build takes 4–8 hours depending on hardware.
-RUN cmake --build /opt/slicer/Slicer-SuperBuild -- -j$(nproc)
+ARG SLICER_BUILD_JOBS=3
+RUN cmake --build /opt/slicer/Slicer-SuperBuild -- -j${SLICER_BUILD_JOBS}
 
 # ---------------------------------------------------------------------------
 # Stage 3: final image
