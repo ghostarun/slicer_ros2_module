@@ -91,6 +91,13 @@ void qSlicerROS2Module::setup()
   // Set up timer connections
   connect(mTimer, SIGNAL(timeout()), this, SLOT(onTimerTimeOut()));
   connect(qSlicerApplication::application(), SIGNAL(lastWindowClosed()), this, SLOT(stopTimer()));
+  connect(qSlicerApplication::application(), &QCoreApplication::aboutToQuit, this, [this]() {
+    this->stopTimer();
+    auto* rosLogic = vtkSlicerROS2Logic::SafeDownCast(this->logic());
+    if (rosLogic) {
+      rosLogic->DisconnectSubscriptions();
+    }
+  });
 }
 
 //-----------------------------------------------------------------------------

@@ -122,9 +122,13 @@ protected:
       return false;
     }
 
+    for (int index = 0; index < rosNodePtr->GetNumberOfNodeReferences("subscriber"); ++index) {
+      if (rosNodePtr->GetNthNodeReference("subscriber", index) == mMRMLNode) {
+        rosNodePtr->RemoveNthNodeReferenceID("subscriber", index);
+        break;
+      }
+    }
     mMRMLNode->SetNodeReferenceID("node", nullptr);
-    rosNodePtr->RemoveNthNodeReferenceID("subscriber",
-                                         rosNodePtr->GetNumberOfNodeReferences("subscriber"));
 
     mSubscription.reset();
     mROSNode.reset();

@@ -77,7 +77,27 @@ vtkSlicerROS2Logic::vtkSlicerROS2Logic()
 //----------------------------------------------------------------------------
 vtkSlicerROS2Logic::~vtkSlicerROS2Logic()
 {
+  this->DisconnectSubscriptions();
   vtkMRMLROS2::ROSShutdown();
+}
+
+
+void vtkSlicerROS2Logic::DisconnectSubscriptions(void)
+{
+  vtkMRMLScene* scene = this->GetMRMLScene();
+  if (!scene) {
+    return;
+  }
+  for (int index = 0; index < scene->GetNumberOfNodes(); ++index) {
+    auto* subscriber = vtkMRMLROS2SubscriberNode::SafeDownCast(scene->GetNthNode(index));
+    if (!subscriber || !subscriber->IsAddedToROS2Node()) {
+      continue;
+    }
+    const char* nodeId = subscriber->GetNodeReferenceID("node");
+    if (nodeId) {
+      subscriber->RemoveFromROS2Node(nodeId, subscriber->GetTopic());
+    }
+  }
 }
 
 

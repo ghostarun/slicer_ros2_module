@@ -77,6 +77,9 @@ class VTK_SLICER_ROS2_MODULE_LOGIC_EXPORT vtkSlicerROS2Logic:
     frequency is 50Hz. */
   void Spin(void);
 
+  /// Release active subscriptions before ROS and its libraries shut down.
+  void DisconnectSubscriptions(void);
+
   /*! Wait until a service client receives a valid response or the timeout
     expires.  This method runs a nested Qt event loop so Slicer's main event
     loop remains active and the module-level ROS2 spin timer can continue
