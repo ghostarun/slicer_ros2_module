@@ -203,7 +203,7 @@ vtkMRMLROS2ParameterNode * vtkMRMLROS2NodeNode::CreateAndAddParameterNode(const 
     return nullptr;
   }
   // CreateNodeByClass
-  vtkSmartPointer<vtkMRMLROS2ParameterNode> parameterNode = vtkMRMLROS2ParameterNode::New();
+  vtkSmartPointer<vtkMRMLROS2ParameterNode> parameterNode = vtkSmartPointer<vtkMRMLROS2ParameterNode>::New();
   // Add to the scene so the ROS2Node node can find it
   this->GetScene()->AddNode(parameterNode);
   if (parameterNode->AddToROS2Node(this->GetID(), monitoredNodeName)) {
@@ -223,7 +223,7 @@ vtkMRMLROS2Tf2BroadcasterNode * vtkMRMLROS2NodeNode::CreateAndAddTf2BroadcasterN
     return nullptr;
   }
   // Create the broadcaster node
-  vtkSmartPointer<vtkMRMLROS2Tf2BroadcasterNode> broadcasterNode = vtkMRMLROS2Tf2BroadcasterNode::New();
+  vtkSmartPointer<vtkMRMLROS2Tf2BroadcasterNode> broadcasterNode = vtkSmartPointer<vtkMRMLROS2Tf2BroadcasterNode>::New();
   // Add to the scene so the ROS2Node node can find it
   this->GetScene()->AddNode(broadcasterNode);
   if (broadcasterNode->AddToROS2Node(this->GetID())) {
@@ -246,7 +246,7 @@ vtkMRMLROS2Tf2LookupNode * vtkMRMLROS2NodeNode::CreateAndAddTf2LookupNode(const 
   }
 
   // Create the lookup node
-  vtkSmartPointer<vtkMRMLROS2Tf2LookupNode> lookupNode = vtkMRMLROS2Tf2LookupNode::New();
+  vtkSmartPointer<vtkMRMLROS2Tf2LookupNode> lookupNode = vtkSmartPointer<vtkMRMLROS2Tf2LookupNode>::New();
   // Add the node to the scene
   this->GetScene()->AddNode(lookupNode);
   if (lookupNode->AddToROS2Node(this->GetID())) {
@@ -273,7 +273,7 @@ vtkMRMLROS2RobotNode * vtkMRMLROS2NodeNode::CreateAndAddRobotNode(const std::str
   }
 
   // Create the robot node
-  vtkSmartPointer<vtkMRMLROS2RobotNode> robotNode = vtkMRMLROS2RobotNode::New();
+  vtkSmartPointer<vtkMRMLROS2RobotNode> robotNode = vtkSmartPointer<vtkMRMLROS2RobotNode>::New();
 
   // Add it to the scene
   this->GetScene()->AddNode(robotNode);

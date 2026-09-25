@@ -97,7 +97,7 @@ void vtkSlicerROS2Logic::SetMRMLSceneInternal(vtkMRMLScene * newScene)
   events->InsertNextValue(vtkMRMLScene::EndBatchProcessEvent);
   this->SetAndObserveMRMLSceneEventsInternal(newScene, events.GetPointer());
 
-  mDefaultROS2Node = vtkMRMLROS2NodeNode::New();
+  mDefaultROS2Node = vtkSmartPointer<vtkMRMLROS2NodeNode>::New();
   this->GetMRMLScene()->AddNode(mDefaultROS2Node);
   mDefaultROS2Node->Create("slicer");
   mROS2Nodes.push_back(mDefaultROS2Node);
