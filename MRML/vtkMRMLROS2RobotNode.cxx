@@ -243,7 +243,7 @@ bool vtkMRMLROS2RobotNode::SetRobotDescriptionParameterNode(void)
     return false;
   }
   // Create a new parameter node
-  mRobotDescriptionParameterNode = vtkMRMLROS2ParameterNode::New();
+  mRobotDescriptionParameterNode = vtkSmartPointer<vtkMRMLROS2ParameterNode>::New();
   this->GetScene()->AddNode(mRobotDescriptionParameterNode);
   mRobotDescriptionParameterNode->SetName((mRobotName + "_parameter").c_str());
   mRobotDescriptionParameterNode->AddToROS2Node(mMRMLROS2Node->GetID(), mInternals->mParameterNodeName);
