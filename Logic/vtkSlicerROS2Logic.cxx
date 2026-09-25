@@ -78,6 +78,11 @@ vtkSlicerROS2Logic::vtkSlicerROS2Logic()
 vtkSlicerROS2Logic::~vtkSlicerROS2Logic()
 {
   this->DisconnectSubscriptions();
+  for (auto& node : mROS2Nodes) {
+    if (node) {
+      node->Destroy();
+    }
+  }
   vtkMRMLROS2::ROSShutdown();
 }
 

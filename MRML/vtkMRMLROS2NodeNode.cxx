@@ -62,7 +62,6 @@ void vtkMRMLROS2NodeNode::Create(const std::string & nodeName)
 void vtkMRMLROS2NodeNode::Destroy(void)
 {
   if (!mInternals || !mInternals->mNodePointer ) {
-    vtkWarningMacro(<< "Destroy: node does not contain any ROS2 internals. Not destroying ROS2 node.");
     return;
   }
   mROS2NodeName = "undefined";
