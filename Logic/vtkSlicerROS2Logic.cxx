@@ -56,8 +56,11 @@
 #include <vtkMRMLROS2Tf2LookupNode.h>
 #include <vtkMRMLROS2RobotNode.h>
 #include <vtkMRMLROS2MotionControlNode.h>
+#include <vtkMRMLROS2PublisherNode.h>
 #include <vtkMRMLROS2PublisherCollisionObjectNode.h>
 #include <vtkMRMLROS2PublisherPlanningSceneToolNode.h>
+
+#include <rclcpp/rclcpp.hpp>
 
 // Automatically generated nodes
 #include <vtkMRMLROS2GeneratedNodes.h>
@@ -78,6 +81,7 @@ vtkSlicerROS2Logic::vtkSlicerROS2Logic()
 vtkSlicerROS2Logic::~vtkSlicerROS2Logic()
 {
   this->DisconnectSubscriptions();
+  this->DisconnectPublishers();
   for (auto& node : mROS2Nodes) {
     if (node) {
       node->Destroy();
@@ -101,6 +105,35 @@ void vtkSlicerROS2Logic::DisconnectSubscriptions(void)
     const char* nodeId = subscriber->GetNodeReferenceID("node");
     if (nodeId) {
       subscriber->RemoveFromROS2Node(nodeId, subscriber->GetTopic());
+    }
+  }
+}
+
+
+void vtkSlicerROS2Logic::DisconnectPublishers(void)
+{
+  vtkMRMLScene* scene = this->GetMRMLScene();
+  if (!scene || !rclcpp::ok()) {
+    return;
+  }
+  for (int index = 0; index < scene->GetNumberOfNodes(); ++index) {
+    auto* publisher = vtkMRMLROS2PublisherNode::SafeDownCast(scene->GetNthNode(index));
+    if (!publisher || !publisher->IsAddedToROS2Node()) {
+      continue;
+    }
+    const char* nodeId = publisher->GetNodeReferenceID("node");
+    auto* rosNode = nodeId && nodeId[0]
+      ? vtkMRMLROS2NodeNode::SafeDownCast(scene->GetNodeByID(nodeId))
+      : nullptr;
+    if (!rosNode) {
+      vtkErrorMacro(<< "DisconnectPublishers: active publisher for topic \""
+                    << publisher->GetTopic() << "\" has no resolvable ROS node reference; "
+                    << "cannot safely release it before ROS shutdown");
+      continue;
+    }
+    if (!publisher->RemoveFromROS2Node(nodeId, publisher->GetTopic())) {
+      vtkErrorMacro(<< "DisconnectPublishers: failed to release publisher for topic \""
+                    << publisher->GetTopic() << "\" before ROS shutdown");
     }
   }
 }

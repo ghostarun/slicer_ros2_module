@@ -137,9 +137,13 @@ protected:
       return false;
     }
 
+    for (int index = 0; index < rosNodePtr->GetNumberOfNodeReferences("publisher"); ++index) {
+      if (rosNodePtr->GetNthNodeReference("publisher", index) == mMRMLNode) {
+        rosNodePtr->RemoveNthNodeReferenceID("publisher", index);
+        break;
+      }
+    }
     mMRMLNode->SetNodeReferenceID("node", nullptr);
-    rosNodePtr->RemoveNthNodeReferenceID("publisher",
-                                         rosNodePtr->GetNumberOfNodeReferences("publisher"));
 
     mPublisher.reset();
     mROSNode.reset();
