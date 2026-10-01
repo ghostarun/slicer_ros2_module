@@ -73,6 +73,26 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2MotionControlNode: public vt
       double planningTimeSec     = 5.0,
       const std::string & plannerId = "");
 
+  /** Plan-only async interface. All calls run on the MRML thread.
+   * Callbacks hold only copied ROS data. Begin returns a token (empty on failure).
+   * Status is pending/ready/error/cancelled/unknown; Take consumes ready/error
+   * and returns a caller-owned VTK object. Cancellation revokes local authority,
+   * but backend cancellation is unconfirmed; recreate this node before retry.
+   * Begin bounds action-server wait to one second; robot-model initialization
+   * may take longer and must be measured separately. */
+  std::string BeginMoveItTrajectoryFromState(
+      const std::string& groupName,
+      const std::vector<std::string>& startJointNames,
+      const std::vector<double>& startJointValues,
+      const std::vector<double>& goalJointValues,
+      double velocityScaling = 0.5,
+      double accelerationScaling = 0.5,
+      double planningTimeSec = 5.0,
+      const std::string& plannerId = "");
+  std::string GetJointPlanStatus(const std::string& token);
+  vtkMoveitMsgsRobotTrajectory* TakeJointPlanResult(const std::string& token);
+  bool CancelJointPlan(const std::string& token);
+
   /** Human-readable result from the most recent joint-space plan request. */
   std::string GetLastJointPlanMessage() const;
 

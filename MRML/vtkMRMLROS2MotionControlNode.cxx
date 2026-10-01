@@ -15,10 +15,16 @@
 #include <moveit/move_group_interface/move_group_interface.hpp>
 #include <moveit/robot_state/robot_state.hpp>
 #include <moveit_msgs/msg/robot_trajectory.hpp>
+#include <moveit_msgs/action/move_group.hpp>
 #include <moveit_msgs/srv/get_cartesian_path.hpp>
 #include <moveit_msgs/srv/get_state_validity.hpp>
 
 #include <algorithm>
+#include <atomic>
+#include <cmath>
+#include <mutex>
+#include <map>
+#include <stdexcept>
 #include <chrono>
 #include <future>
 #include <sstream>
@@ -59,6 +65,75 @@ const char* MoveItErrorCodeName(int code)
 }
 }
 
+namespace
+{
+using JointPlanAction = moveit_msgs::action::MoveGroup;
+using JointPlanHandle = rclcpp_action::ClientGoalHandle<JointPlanAction>;
+using MoveGroup = moveit::planning_interface::MoveGroupInterface;
+
+// Callbacks own no MRML objects, MoveGroupInterface, or VTK state.
+struct JointPlanReply
+{
+  std::mutex Mutex;
+  std::string Status = "pending";
+  JointPlanHandle::SharedPtr Handle;
+  std::shared_ptr<JointPlanAction::Result> Result;
+  std::string Message;
+};
+std::atomic<unsigned long long> JointPlanSequence{0};
+
+void ConfigureExplicitJointPlan(MoveGroup& group,
+    const std::string& groupName,
+    const std::vector<std::string>& startNames,
+    const std::vector<double>& startValues,
+    const std::vector<double>& goalValues,
+    double velocity, double acceleration, double planningTime,
+    const std::string& plannerId)
+{
+  if (!std::isfinite(velocity) || !std::isfinite(acceleration) || !std::isfinite(planningTime)) {
+    throw std::invalid_argument("Planning parameters must be finite");
+  }
+  if (startNames.empty() || startNames.size() != startValues.size()) {
+    throw std::invalid_argument("Explicit start names/values are empty or mismatched");
+  }
+  if (!plannerId.empty()) { group.setPlannerId(plannerId); }
+  const auto names = group.getJointNames();
+  if (names.size() != goalValues.size()) {
+    throw std::invalid_argument("Goal vector does not match the planning group");
+  }
+  std::map<std::string, double> start;
+  for (size_t i = 0; i < startNames.size(); ++i) {
+    if (!std::isfinite(startValues[i]) || !start.emplace(startNames[i], startValues[i]).second) {
+      throw std::invalid_argument("Explicit start has nonfinite or duplicate values");
+    }
+  }
+  auto model = group.getRobotModel();
+  if (!model) { throw std::runtime_error("MoveIt robot model is unavailable"); }
+  moveit::core::RobotState state(model);
+  state.setToDefaultValues();
+  std::map<std::string, double> targets;
+  for (size_t i = 0; i < names.size(); ++i) {
+    if (!start.count(names[i]) || !std::isfinite(goalValues[i])) {
+      throw std::invalid_argument("Explicit state omitted a group joint or contains a nonfinite goal");
+    }
+    state.setVariablePosition(names[i], start.at(names[i]));
+    targets[names[i]] = goalValues[i];
+  }
+  state.update();
+  const auto* jointGroup = state.getJointModelGroup(groupName);
+  if (!jointGroup || !state.satisfiesBounds(jointGroup)) {
+    throw std::invalid_argument("Explicit start violates group bounds");
+  }
+  group.setMaxVelocityScalingFactor(std::clamp(velocity, 0.0, 1.0));
+  group.setMaxAccelerationScalingFactor(std::clamp(acceleration, 0.0, 1.0));
+  group.setPlanningTime(planningTime > 0.0 ? planningTime : 5.0);
+  group.setStartState(state);
+  if (!group.setJointValueTarget(targets)) {
+    throw std::invalid_argument("Explicit goal violates group constraints");
+  }
+}
+}
+
 // ── Internals ────────────────────────────────────────────────────────────────
 
 struct vtkMRMLROS2MotionControlNodeInternals
@@ -69,6 +144,11 @@ struct vtkMRMLROS2MotionControlNodeInternals
   std::string LastForwardKinematicsMessage;
   std::string LastJointPlanMessage;
   std::string LastJointPlannerId;
+  std::string JointPlanToken;
+  std::weak_ptr<rclcpp::Node> JointPlanNode;
+  std::shared_ptr<JointPlanReply> JointPlan;
+  // Destroyed only by the main-thread API, never by a result callback.
+  std::unique_ptr<MoveGroup> JointPlanGroup;
 };
 
 // ── vtkStandardNewMacro ──────────────────────────────────────────────────────
@@ -81,7 +161,10 @@ vtkMRMLROS2MotionControlNode::vtkMRMLROS2MotionControlNode()
   : mInternals(std::make_unique<vtkMRMLROS2MotionControlNodeInternals>())
 {}
 
-vtkMRMLROS2MotionControlNode::~vtkMRMLROS2MotionControlNode() = default;
+vtkMRMLROS2MotionControlNode::~vtkMRMLROS2MotionControlNode()
+{
+  try { CancelJointPlan(mInternals->JointPlanToken); } catch (...) {}
+}
 
 // ── vtkMRMLNode boilerplate ──────────────────────────────────────────────────
 
@@ -132,6 +215,11 @@ vtkMoveitMsgsRobotTrajectory* vtkMRMLROS2MotionControlNode::PlanMoveItTrajectory
     double planningTimeSec,
     const std::string & plannerId)
 {
+  if (mInternals->JointPlan) {
+    mInternals->LastJointPlanMessage = "A joint request is pending or cancellation is unresolved";
+    return vtkMoveitMsgsRobotTrajectory::New();
+  }
+
   mInternals->LastJointPlanMessage.clear();
   mInternals->LastJointPlannerId.clear();
   vtkMoveitMsgsRobotTrajectory* traj = vtkMoveitMsgsRobotTrajectory::New();
@@ -199,120 +287,174 @@ vtkMoveitMsgsRobotTrajectory* vtkMRMLROS2MotionControlNode::PlanMoveItTrajectory
     double planningTimeSec,
     const std::string & plannerId)
 {
+  auto* trajectory = vtkMoveitMsgsRobotTrajectory::New();
+  if (mInternals->JointPlan) {
+    mInternals->LastJointPlanMessage = "An asynchronous request is pending or cancellation is unresolved";
+    return trajectory;
+  }
   mInternals->LastJointPlanMessage.clear();
   mInternals->LastJointPlannerId.clear();
-  vtkMoveitMsgsRobotTrajectory* traj = vtkMoveitMsgsRobotTrajectory::New();
-
   auto node = GetROSNodePointer();
-  if (!node) {
-    mInternals->LastJointPlanMessage =
-        "Explicit-start planning failed: ROS node is unavailable";
-    return traj;
+  if (!node || groupName.empty()) {
+    mInternals->LastJointPlanMessage = "Explicit-start planning requires a ROS node and planning group";
+    return trajectory;
   }
-
-  if (groupName.empty()) {
-    mInternals->LastJointPlanMessage =
-        "Explicit-start planning failed: planning group is empty";
-    vtkErrorMacro(<< "PlanMoveItTrajectoryFromState: groupName is empty");
-    return traj;
-  }
-  if (startJointNames.empty() || startJointNames.size() != startJointValues.size()) {
-    mInternals->LastJointPlanMessage =
-        "Explicit-start planning failed: start joint names/values are empty or mismatched";
-    vtkErrorMacro(<< "PlanMoveItTrajectoryFromState: startJointNames has "
-                  << startJointNames.size() << " entries but startJointValues has "
-                  << startJointValues.size());
-    return traj;
-  }
-
-  moveit::planning_interface::MoveGroupInterface moveGroup(node, groupName);
-  if (!plannerId.empty()) {
-    moveGroup.setPlannerId(plannerId);
-  }
-  mInternals->LastJointPlannerId = moveGroup.getPlannerId();
-  const auto groupJointNames = moveGroup.getJointNames();
-  if (groupJointNames.size() != goalJointValues.size()) {
-    mInternals->LastJointPlanMessage =
-        "Explicit-start planning failed: goal vector does not match the planning group";
-    vtkErrorMacro(<< "PlanMoveItTrajectoryFromState: expected "
-                  << groupJointNames.size() << " goal joint values for group '"
-                  << groupName << "' but got " << goalJointValues.size());
-    return traj;
-  }
-
-  std::map<std::string, double> submittedStart;
-  for (size_t i = 0; i < startJointNames.size(); ++i) {
-    submittedStart[startJointNames[i]] = startJointValues[i];
-  }
-  for (const auto & jointName : groupJointNames) {
-    if (submittedStart.find(jointName) == submittedStart.end()) {
-      mInternals->LastJointPlanMessage =
-          "Explicit-start planning failed: submitted start omitted group joint '" +
-          jointName + "'";
-      vtkErrorMacro(<< "PlanMoveItTrajectoryFromState: explicit start state omitted group joint '"
-                    << jointName << "'");
-      return traj;
+  try {
+    MoveGroup group(node, groupName);
+    ConfigureExplicitJointPlan(group, groupName, startJointNames, startJointValues,
+        goalJointValues, velocityScaling, accelerationScaling, planningTimeSec, plannerId);
+    mInternals->LastJointPlannerId = group.getPlannerId();
+    MoveGroup::Plan plan;
+    const auto result = group.plan(plan);
+    if (result == moveit::core::MoveItErrorCode::SUCCESS) {
+      mInternals->CachedTrajectory = plan.trajectory;
+      vtkROS2ToSlicer(plan.trajectory, vtkSmartPointer<vtkMoveitMsgsRobotTrajectory>(trajectory));
+      mInternals->LastJointPlanMessage = "MoveIt explicit-start joint planning succeeded";
+    } else {
+      mInternals->LastJointPlanMessage = "MoveIt explicit-start joint planning failed: code=" +
+          std::to_string(result.val) + " (" + MoveItErrorCodeName(result.val) + ")";
     }
+  } catch (const std::exception& error) {
+    mInternals->LastJointPlanMessage = error.what();
   }
+  return trajectory;
+}
 
-  auto robotModel = moveGroup.getRobotModel();
-  if (!robotModel) {
-    mInternals->LastJointPlanMessage =
-        "Explicit-start planning failed: MoveIt robot model is unavailable";
-    vtkErrorMacro(<< "PlanMoveItTrajectoryFromState: MoveIt robot model is unavailable");
-    return traj;
+std::string vtkMRMLROS2MotionControlNode::BeginMoveItTrajectoryFromState(
+    const std::string& groupName,
+    const std::vector<std::string>& startJointNames,
+    const std::vector<double>& startJointValues,
+    const std::vector<double>& goalJointValues,
+    double velocityScaling, double accelerationScaling,
+    double planningTimeSec, const std::string& plannerId)
+{
+  if (mInternals->JointPlan) {
+    mInternals->LastJointPlanMessage = "A joint request is pending or backend cancellation is unconfirmed; recreate the motion-control node before another request";
+    return "";
   }
-  moveit::core::RobotState startState(robotModel);
-  startState.setToDefaultValues();
-  for (const auto & jointName : groupJointNames) {
-    startState.setVariablePosition(jointName, submittedStart[jointName]);
+  mInternals->CachedTrajectory = {};
+  mInternals->LastJointPlanMessage.clear();
+  mInternals->LastJointPlannerId.clear();
+  auto node = GetROSNodePointer();
+  if (!node || groupName.empty()) {
+    mInternals->LastJointPlanMessage = "Explicit-start planning requires a ROS node and planning group";
+    return "";
   }
-  startState.update();
-  const auto * jointModelGroup = startState.getJointModelGroup(groupName);
-  if (!jointModelGroup || !startState.satisfiesBounds(jointModelGroup)) {
-    mInternals->LastJointPlanMessage =
-        "Explicit-start planning failed: submitted start violates group bounds";
-    vtkErrorMacro(<< "PlanMoveItTrajectoryFromState: explicit start state violates group bounds");
-    return traj;
+  try {
+    auto group = std::make_unique<MoveGroup>(node, groupName,
+        std::shared_ptr<tf2_ros::Buffer>(), rclcpp::Duration::from_seconds(1.0));
+    ConfigureExplicitJointPlan(*group, groupName, startJointNames, startJointValues,
+        goalJointValues, velocityScaling, accelerationScaling, planningTimeSec, plannerId);
+    auto& client = group->getMoveGroupClient();
+    if (!client.action_server_is_ready()) {
+      throw std::runtime_error("MoveGroup action server is unavailable");
+    }
+    JointPlanAction::Goal goal;
+    group->constructMotionPlanRequest(goal.request);
+    goal.planning_options.plan_only = true;
+    goal.planning_options.look_around = false;
+    goal.planning_options.replan = false;
+    goal.planning_options.planning_scene_diff.is_diff = true;
+    goal.planning_options.planning_scene_diff.robot_state.is_diff = true;
+    auto reply = std::make_shared<JointPlanReply>();
+    std::weak_ptr<JointPlanReply> weakReply = reply;
+    rclcpp_action::Client<JointPlanAction>::SendGoalOptions options;
+    options.goal_response_callback = [weakReply](JointPlanHandle::SharedPtr handle) {
+      if (auto reply = weakReply.lock()) {
+        std::lock_guard<std::mutex> lock(reply->Mutex);
+        reply->Handle = handle;
+        if (!handle && reply->Status == "pending") {
+          reply->Status = "error";
+          reply->Message = "MoveGroup rejected the plan-only request";
+        }
+      }
+    };
+    options.result_callback = [weakReply](const JointPlanHandle::WrappedResult& result) {
+      if (auto reply = weakReply.lock()) {
+        std::lock_guard<std::mutex> lock(reply->Mutex);
+        if (reply->Status != "pending") { return; }
+        reply->Result = result.result;
+        const bool success = result.code == rclcpp_action::ResultCode::SUCCEEDED &&
+            result.result && result.result->error_code.val == 1;
+        reply->Status = success ? "ready" : "error";
+        reply->Message = result.result ?
+            "MoveIt explicit-start joint planning code=" + std::to_string(result.result->error_code.val) +
+                " (" + MoveItErrorCodeName(result.result->error_code.val) + ")" :
+            "MoveGroup returned no result";
+      }
+    };
+    mInternals->LastJointPlannerId = group->getPlannerId();
+    mInternals->JointPlanToken = "joint-plan-" + std::to_string(++JointPlanSequence);
+    mInternals->JointPlanNode = node;
+    mInternals->JointPlan = reply;
+    mInternals->JointPlanGroup = std::move(group);
+    client.async_send_goal(goal, options);
+    return mInternals->JointPlanToken;
+  } catch (const std::exception& error) {
+    mInternals->LastJointPlanMessage = error.what();
+    if (mInternals->JointPlan) {
+      CancelJointPlan(mInternals->JointPlanToken);
+      mInternals->LastJointPlanMessage = std::string(error.what()) + "; " + mInternals->LastJointPlanMessage;
+    }
+    return "";
   }
+}
 
-  const double velScale = std::clamp(velocityScaling,     0.0, 1.0);
-  const double accScale = std::clamp(accelerationScaling, 0.0, 1.0);
-  moveGroup.setMaxVelocityScalingFactor(velScale);
-  moveGroup.setMaxAccelerationScalingFactor(accScale);
-  moveGroup.setPlanningTime(planningTimeSec > 0.0 ? planningTimeSec : 5.0);
-  moveGroup.setStartState(startState);
-
-  std::map<std::string, double> targets;
-  for (size_t i = 0; i < groupJointNames.size(); ++i) {
-    targets[groupJointNames[i]] = goalJointValues[i];
+std::string vtkMRMLROS2MotionControlNode::GetJointPlanStatus(const std::string& token)
+{
+  if (!mInternals->JointPlan || token != mInternals->JointPlanToken) { return "unknown"; }
+  auto submittedNode = mInternals->JointPlanNode.lock();
+  if (!submittedNode || !rclcpp::ok(submittedNode->get_node_base_interface()->get_context()) ||
+      submittedNode != GetROSNodePointer() || !this->GetScene()) {
+    CancelJointPlan(token);
   }
-  if (!moveGroup.setJointValueTarget(targets)) {
-    mInternals->LastJointPlanMessage =
-        "Explicit-start planning failed: submitted goal violates the planning group's joint constraints";
-    vtkErrorMacro(<< "PlanMoveItTrajectoryFromState: goal target was rejected for group '"
-                  << groupName << "'");
-    return traj;
-  }
+  std::lock_guard<std::mutex> lock(mInternals->JointPlan->Mutex);
+  return mInternals->JointPlan->Status;
+}
 
-  moveit::planning_interface::MoveGroupInterface::Plan plan;
-  auto result = moveGroup.plan(plan);
-  if (result == moveit::core::MoveItErrorCode::SUCCESS) {
-    mInternals->CachedTrajectory = plan.trajectory;
-    vtkROS2ToSlicer(plan.trajectory, vtkSmartPointer<vtkMoveitMsgsRobotTrajectory>(traj));
-    mInternals->LastJointPlanMessage =
-        "MoveIt explicit-start joint planning succeeded";
-  } else {
-    mInternals->LastJointPlanMessage =
-        "MoveIt explicit-start joint planning failed: code=" +
-        std::to_string(result.val) + " (" + MoveItErrorCodeName(result.val) +
-        "), group='" + groupName + "', planningTimeSec=" +
-        std::to_string(planningTimeSec > 0.0 ? planningTimeSec : 5.0);
-    vtkErrorMacro(<< "PlanMoveItTrajectoryFromState: planning failed for group '"
-                  << groupName << "' with MoveItErrorCode=" << result.val);
+vtkMoveitMsgsRobotTrajectory* vtkMRMLROS2MotionControlNode::TakeJointPlanResult(const std::string& token)
+{
+  auto* trajectory = vtkMoveitMsgsRobotTrajectory::New();
+  const auto status = GetJointPlanStatus(token);
+  if (status != "ready" && status != "error") { return trajectory; }
+  std::shared_ptr<JointPlanAction::Result> result;
+  {
+    std::lock_guard<std::mutex> lock(mInternals->JointPlan->Mutex);
+    result = mInternals->JointPlan->Result;
+    mInternals->LastJointPlanMessage = mInternals->JointPlan->Message;
   }
+  if (status == "ready" && result) {
+    mInternals->CachedTrajectory = result->planned_trajectory;
+    vtkROS2ToSlicer(result->planned_trajectory, vtkSmartPointer<vtkMoveitMsgsRobotTrajectory>(trajectory));
+  }
+  mInternals->JointPlanGroup.reset();
+  mInternals->JointPlan.reset();
+  mInternals->JointPlanNode.reset();
+  mInternals->JointPlanToken.clear();
+  return trajectory;
+}
 
-  return traj;
+bool vtkMRMLROS2MotionControlNode::CancelJointPlan(const std::string& token)
+{
+  if (!mInternals->JointPlan || token != mInternals->JointPlanToken) { return false; }
+  JointPlanHandle::SharedPtr handle;
+  {
+    std::lock_guard<std::mutex> lock(mInternals->JointPlan->Mutex);
+    mInternals->JointPlan->Status = "cancelled";
+    mInternals->JointPlan->Result.reset();
+    handle = mInternals->JointPlan->Handle;
+    mInternals->JointPlan->Handle.reset();
+  }
+  mInternals->CachedTrajectory = {};
+  if (handle && mInternals->JointPlanGroup) {
+    try { mInternals->JointPlanGroup->getMoveGroupClient().async_cancel_goal(handle); }
+    catch (const std::exception&) {} // Local authority is revoked even if ROS is gone.
+  }
+  // No backend ACK wait. Retain only a tombstone: cancellation is unconfirmed,
+  // and no further plan/execution is allowed until this MRML node is recreated.
+  mInternals->JointPlanGroup.reset();
+  mInternals->LastJointPlanMessage = "Local result revoked; backend cancellation unconfirmed; recreate the motion-control node before another request";
+  return true;
 }
 
 std::string vtkMRMLROS2MotionControlNode::GetLastJointPlanMessage() const
@@ -502,6 +644,11 @@ vtkMoveitMsgsRobotTrajectory* vtkMRMLROS2MotionControlNode::PlanMoveItCartesianT
     double planningTimeSec,
     const std::string & linkName)
 {
+  if (mInternals->JointPlan) {
+    mInternals->LastJointPlanMessage = "A joint request is pending or cancellation is unresolved";
+    return vtkMoveitMsgsRobotTrajectory::New();
+  }
+
   vtkMoveitMsgsRobotTrajectory* traj = vtkMoveitMsgsRobotTrajectory::New();
   mInternals->LastCartesianPathFraction = 0.0;
 
@@ -635,6 +782,11 @@ bool vtkMRMLROS2MotionControlNode::ExecuteMoveItTrajectory(
     const std::string & groupName,
     vtkMoveitMsgsRobotTrajectory* trajectory)
 {
+  if (mInternals->JointPlan) {
+    mInternals->LastJointPlanMessage = "A joint request is pending or cancellation is unresolved";
+    return false;
+  }
+
   auto node = GetROSNodePointer();
   if (!node) { return false; }
 
@@ -677,6 +829,11 @@ bool vtkMRMLROS2MotionControlNode::ExecuteMoveItTrajectory(
 
 bool vtkMRMLROS2MotionControlNode::ExecuteCachedMoveItTrajectory(const std::string & groupName)
 {
+  if (mInternals->JointPlan) {
+    mInternals->LastJointPlanMessage = "A joint request is pending or cancellation is unresolved";
+    return false;
+  }
+
   if (mInternals->CachedTrajectory.joint_trajectory.points.empty()) {
     vtkErrorMacro(<< "ExecuteCachedMoveItTrajectory: no cached trajectory. "
                      "Call PlanMoveItTrajectory first.");
@@ -696,6 +853,11 @@ bool vtkMRMLROS2MotionControlNode::PlanAndExecuteMoveItTrajectory(
     double accelerationScaling,
     double planningTimeSec)
 {
+  if (mInternals->JointPlan) {
+    mInternals->LastJointPlanMessage = "A joint request is pending or cancellation is unresolved";
+    return false;
+  }
+
   auto * trajectory = PlanMoveItTrajectory(groupName, goalJointValues,
                                             velocityScaling, accelerationScaling,
                                             planningTimeSec);
@@ -720,6 +882,11 @@ bool vtkMRMLROS2MotionControlNode::ExecuteMoveItTrajectoryAsync(
     const std::string & groupName,
     vtkMoveitMsgsRobotTrajectory* trajectory)
 {
+  if (mInternals->JointPlan) {
+    mInternals->LastJointPlanMessage = "A joint request is pending or cancellation is unresolved";
+    return false;
+  }
+
   auto node = GetROSNodePointer();
   if (!node) { return false; }
 
