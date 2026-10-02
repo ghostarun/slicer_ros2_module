@@ -176,12 +176,12 @@ bool vtkMRMLROS2Tf2LookupNode::GetModifiedOnLookup(void) const
 
 bool vtkMRMLROS2Tf2LookupNode::IsDifferentFromLast(const unsigned int seconds, const unsigned int nanoSeconds)
 {
-  if ((mLastSeconds == 0) && (mLastNanoSeconds == 0)) {
-    return true;
-  }
-  if ((mLastSeconds == seconds) && (mLastNanoSeconds == nanoSeconds)) {
+  // DENTOBOT 2026-10-03: the previous (0, 0) "first lookup" branch returned
+  // true without storing the stamp, so every Spin re-applied every lookup.
+  if (mHasLastStamp && (mLastSeconds == seconds) && (mLastNanoSeconds == nanoSeconds)) {
     return false;
   }
+  mHasLastStamp = true;
   mLastSeconds = seconds;
   mLastNanoSeconds = nanoSeconds;
   return true;

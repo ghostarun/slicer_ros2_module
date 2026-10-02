@@ -58,6 +58,7 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2Tf2LookupNode: public vtkMRM
   std::string mChildID = "";
   bool mAddedToROS2Node = false;
   bool mModifiedOnLookup = true;
+  bool mHasLastStamp = false;
   unsigned int mLastSeconds = 0;
   unsigned int mLastNanoSeconds = 0;
   unsigned int mLookupAttempts = 0;

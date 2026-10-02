@@ -1,6 +1,7 @@
 #include <vtkMRMLROS2NodeNode.h>
 
 #include <vtkMatrix4x4.h>
+#include <vtkNew.h>
 #include <vtkMRMLScene.h>
 
 #include <vtkROS2ToSlicer.h>
@@ -644,6 +645,24 @@ void vtkMRMLROS2NodeNode::SpinTf2Buffer(void)
         transformStamped = mInternals->mTf2Buffer->lookupTransform(parent_id, child_id, tf2::TimePointZero);
         if (lookupNode->IsDifferentFromLast(transformStamped.header.stamp.sec, transformStamped.header.stamp.nanosec)) {
           vtkROS2ToSlicer(transformStamped.transform, mTemporaryMatrix);
+          // DENTOBOT 2026-10-03: re-applying an identical matrix still fires
+          // TransformModifiedEvent and requests a 3D render, which the render
+          // blocker in vtkSlicerROS2Logic::Spin then forces synchronously.
+          // A fresh stamp with an unchanged pose (static robot) is skipped.
+          vtkNew<vtkMatrix4x4> currentMatrix;
+          lookupNode->GetMatrixTransformToParent(currentMatrix);
+          bool unchanged = true;
+          for (int row = 0; row < 4 && unchanged; ++row) {
+            for (int column = 0; column < 4; ++column) {
+              if (currentMatrix->GetElement(row, column) != mTemporaryMatrix->GetElement(row, column)) {
+                unchanged = false;
+                break;
+              }
+            }
+          }
+          if (unchanged) {
+            continue;
+          }
           if (lookupNode->GetModifiedOnLookup()) {
             lookupNode->SetMatrixTransformToParent(mTemporaryMatrix);
           } else {
