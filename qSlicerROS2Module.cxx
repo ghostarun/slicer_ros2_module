@@ -95,6 +95,7 @@ void qSlicerROS2Module::setup()
     this->stopTimer();
     auto* rosLogic = vtkSlicerROS2Logic::SafeDownCast(this->logic());
     if (rosLogic) {
+      rosLogic->DisconnectRobots();
       rosLogic->DisconnectSubscriptions();
       rosLogic->DisconnectPublishers();
     }

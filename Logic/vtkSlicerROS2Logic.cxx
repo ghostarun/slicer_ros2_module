@@ -80,6 +80,7 @@ vtkSlicerROS2Logic::vtkSlicerROS2Logic()
 //----------------------------------------------------------------------------
 vtkSlicerROS2Logic::~vtkSlicerROS2Logic()
 {
+  this->DisconnectRobots();
   this->DisconnectSubscriptions();
   this->DisconnectPublishers();
   for (auto& node : mROS2Nodes) {
@@ -105,6 +106,20 @@ void vtkSlicerROS2Logic::DisconnectSubscriptions(void)
     const char* nodeId = subscriber->GetNodeReferenceID("node");
     if (nodeId) {
       subscriber->RemoveFromROS2Node(nodeId, subscriber->GetTopic());
+    }
+  }
+}
+
+
+void vtkSlicerROS2Logic::DisconnectRobots(void)
+{
+  for (const auto& node : mROS2Nodes) {
+    if (!node) {
+      continue;
+    }
+    const auto robotNames = node->mRobotNames;
+    for (const auto& robotName : robotNames) {
+      node->RemoveAndDeleteRobotNode(robotName);
     }
   }
 }

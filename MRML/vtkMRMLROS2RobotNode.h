@@ -145,6 +145,8 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   void ObserveParameterNodeCallback( vtkObject* caller, unsigned long, void* vtkNotUsed(callData));
 
  private:
+  void ReleaseMoveItResources();
+
   std::string mLastMoveItPositionAxisIKTerminationReason = "not_initialized";
   int mLastMoveItPositionAxisIKIterationCount = 0;
   std::string mLastMoveItPositionAxisIKCollisionCheckStatus = "not_attempted";

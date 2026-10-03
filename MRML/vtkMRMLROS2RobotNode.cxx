@@ -82,7 +82,22 @@ vtkMRMLROS2RobotNode::vtkMRMLROS2RobotNode()
 
 vtkMRMLROS2RobotNode::~vtkMRMLROS2RobotNode()
 {
+  this->ReleaseMoveItResources();
   this->RemoveRobotVisualization();
+}
+
+void vtkMRMLROS2RobotNode::ReleaseMoveItResources()
+{
+  if (mInternals->PlanningSceneMonitorPtr) {
+    mInternals->PlanningSceneMonitorPtr->stopStateMonitor();
+    mInternals->PlanningSceneMonitorPtr->stopSceneMonitor();
+    mInternals->PlanningSceneMonitorPtr->stopWorldGeometryMonitor();
+  }
+  mInternals->PlanningSceneMonitorPtr.reset();
+  mInternals->JointModelGroupPtr = nullptr;
+  mInternals->IKGroupName.clear();
+  mInternals->RobotModelPtr.reset();
+  mInternals->RobotModelLoaderPtr.reset();
 }
 
 
@@ -198,6 +213,8 @@ bool vtkMRMLROS2RobotNode::RemoveFromROS2Node(const char * nodeId)
     vtkErrorMacro(<< "RemoveFromROS2Node: " << errorMessage);
     return false;
   }
+
+  this->ReleaseMoveItResources();
 
   // Remove the robot visualization
   this->RemoveRobotVisualization();

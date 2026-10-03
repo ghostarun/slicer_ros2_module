@@ -80,6 +80,9 @@ class VTK_SLICER_ROS2_MODULE_LOGIC_EXPORT vtkSlicerROS2Logic:
   /// Release active subscriptions before ROS and its libraries shut down.
   void DisconnectSubscriptions(void);
 
+  /// Release robot-owned MoveIt resources before ROS and its libraries shut down.
+  void DisconnectRobots(void);
+
   /// Release active publishers before ROS and its libraries shut down.
   void DisconnectPublishers(void);
 
