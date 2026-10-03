@@ -9,6 +9,7 @@
 
 // MRML includes
 #include <vtkMRMLNode.h>
+#include <vtkWrappingHints.h>  // VTK_NEWINSTANCE
 
 #include <vtkSlicerROS2ModuleMRMLExport.h>
 
@@ -48,7 +49,7 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2MotionControlNode: public vt
    *  goalJointValues must match the group's joint order.
    *  The result is also cached for ExecuteCachedMoveItTrajectory().
    *  Returns a (possibly empty) trajectory; caller owns the returned object. */
-  vtkMoveitMsgsRobotTrajectory* PlanMoveItTrajectory(const std::string & groupName,
+  VTK_NEWINSTANCE vtkMoveitMsgsRobotTrajectory* PlanMoveItTrajectory(const std::string & groupName,
                                                       const std::vector<double> & goalJointValues,
                                                       double velocityScaling     = 0.5,
                                                       double accelerationScaling = 0.5,
@@ -63,7 +64,7 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2MotionControlNode: public vt
    *  monitored current state for the caller-supplied start state. The result
    *  is cached for ExecuteCachedMoveItTrajectory(); caller owns the returned
    *  object. */
-  vtkMoveitMsgsRobotTrajectory* PlanMoveItTrajectoryFromState(
+  VTK_NEWINSTANCE vtkMoveitMsgsRobotTrajectory* PlanMoveItTrajectoryFromState(
       const std::string & groupName,
       const std::vector<std::string> & startJointNames,
       const std::vector<double> & startJointValues,
@@ -90,7 +91,7 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2MotionControlNode: public vt
       double planningTimeSec = 5.0,
       const std::string& plannerId = "");
   std::string GetJointPlanStatus(const std::string& token);
-  vtkMoveitMsgsRobotTrajectory* TakeJointPlanResult(const std::string& token);
+  VTK_NEWINSTANCE vtkMoveitMsgsRobotTrajectory* TakeJointPlanResult(const std::string& token);
   bool CancelJointPlan(const std::string& token);
 
   /** Human-readable result from the most recent joint-space plan request. */
@@ -130,7 +131,7 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2MotionControlNode: public vt
    *  frame / robot root.  If a start state is supplied, startJointNames and
    *  startJointValues must have the same length.  GetLastCartesianPathFraction()
    *  reports the fraction of requested waypoints that MoveIt could satisfy. */
-  vtkMoveitMsgsRobotTrajectory* PlanMoveItCartesianTrajectory(const std::string & groupName,
+  VTK_NEWINSTANCE vtkMoveitMsgsRobotTrajectory* PlanMoveItCartesianTrajectory(const std::string & groupName,
                                                               vtkCollection* targetPoses,
                                                               const std::vector<std::string> & startJointNames,
                                                               const std::vector<double> & startJointValues,
