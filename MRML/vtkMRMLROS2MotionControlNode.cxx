@@ -752,7 +752,11 @@ vtkMoveitMsgsRobotTrajectory* vtkMRMLROS2MotionControlNode::PlanMoveItCartesianT
   mInternals->LastCartesianPathFraction = response->fraction;
   moveit_msgs::msg::RobotTrajectory rosTrajectory = response->solution;
   if (response->fraction <= 0.0 || rosTrajectory.joint_trajectory.points.empty()) {
-    vtkErrorMacro(<< "PlanMoveItCartesianTrajectory: Cartesian planning failed for group '"
+    // No Cartesian path is a normal answer (e.g. one rejected IK candidate); the
+    // caller reads LastCartesianPathFraction and reports real step failures. An
+    // error here turned Slicer's error log red on every passing plan (DentoBot
+    // r22: 117 per run).
+    vtkDebugMacro(<< "PlanMoveItCartesianTrajectory: Cartesian planning failed for group '"
                   << groupName << "' with fraction=" << response->fraction
                   << " and MoveItErrorCode=" << response->error_code.val);
     return traj;
