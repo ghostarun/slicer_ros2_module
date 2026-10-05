@@ -19,6 +19,8 @@
 #include <moveit_msgs/srv/get_cartesian_path.hpp>
 #include <moveit_msgs/srv/get_state_validity.hpp>
 #include <moveit_msgs/srv/get_planning_scene.hpp>
+#include <moveit_msgs/srv/apply_planning_scene.hpp>
+#include <vtkMRMLModelNode.h>
 #include <moveit_msgs/msg/planning_scene_components.hpp>
 
 #include <algorithm>
@@ -501,6 +503,51 @@ std::string DentoJsonEscape(const std::string & text)
   return out;
 }
 }  // namespace
+
+bool vtkMRMLROS2MotionControlNode::ApplyMoveItCollisionObject(
+    vtkMRMLModelNode * modelNode, const std::string & frameId, double timeoutSec)
+{
+  mInternals->LastPlanningSceneMessage.clear();
+  auto node = GetROSNodePointer();
+  if (!node) {
+    mInternals->LastPlanningSceneMessage = "ROS node is unavailable";
+    return false;
+  }
+  if (!modelNode) {
+    mInternals->LastPlanningSceneMessage = "model node is null";
+    return false;
+  }
+  moveit_msgs::msg::CollisionObject object;
+  vtkSlicerToROS2(modelNode, object, node);
+  object.header.frame_id = frameId;
+  object.operation = moveit_msgs::msg::CollisionObject::ADD;
+  auto request = std::make_shared<moveit_msgs::srv::ApplyPlanningScene::Request>();
+  request->scene.is_diff = true;
+  request->scene.robot_state.is_diff = true;
+  request->scene.world.collision_objects.push_back(object);
+  auto client = node->create_client<moveit_msgs::srv::ApplyPlanningScene>("/apply_planning_scene");
+  const auto timeout = std::chrono::duration<double>(timeoutSec > 0.0 ? timeoutSec : 5.0);
+  if (!client->wait_for_service(timeout)) {
+    mInternals->LastPlanningSceneMessage = "/apply_planning_scene is unavailable after the bounded timeout";
+    return false;
+  }
+  auto future = client->async_send_request(request);
+  const auto startTime = std::chrono::steady_clock::now();
+  while (future.wait_for(std::chrono::milliseconds(5)) != std::future_status::ready) {
+    rclcpp::spin_some(node);
+    if (std::chrono::steady_clock::now() - startTime > timeout) {
+      mInternals->LastPlanningSceneMessage = "/apply_planning_scene request timed out for " + object.id;
+      return false;
+    }
+  }
+  auto response = future.get();
+  if (!response || !response->success) {
+    mInternals->LastPlanningSceneMessage = "MoveGroup rejected the planning-scene diff for " + object.id;
+    return false;
+  }
+  mInternals->LastPlanningSceneMessage = "MoveGroup applied " + object.id;
+  return true;
+}
 
 std::string vtkMRMLROS2MotionControlNode::GetLastPlanningSceneMessage() const
 {

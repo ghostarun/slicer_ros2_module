@@ -29,6 +29,8 @@ class vtkMRMLROS2MotionControlNodeInternals;
  *   "node"  → vtkMRMLROS2NodeNode   (provides the rclcpp::Node)
  *   "robot" → vtkMRMLROS2RobotNode  (informational / future use)
  */
+class vtkMRMLModelNode;
+
 class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2MotionControlNode: public vtkMRMLNode
 {
  public:
@@ -117,6 +119,13 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2MotionControlNode: public vt
    *  in the objects' frame (MoveIt planning frame), millimetres. Empty string on
    *  failure; see GetLastPlanningSceneMessage(). DENTOBOT S6-LIVE-01 2026-10-06. */
   std::string GetMoveItWorldObjectBounds(double timeoutSec = 3.0);
+
+  /** Apply one model as a CollisionObject ADD to MoveGroup via the synchronous
+   *  /apply_planning_scene service (planning-scene diff). Uses the same
+   *  conversion as the /collision_object publisher. Returns true only when
+   *  MoveGroup reports success. DENTOBOT S6-LIVE-01 2026-10-06. */
+  bool ApplyMoveItCollisionObject(vtkMRMLModelNode * modelNode, const std::string & frameId,
+                                  double timeoutSec = 5.0);
   std::string GetLastPlanningSceneMessage() const;
 
   /** Compute one explicit-state FK pose for *linkName* in MoveIt's model
