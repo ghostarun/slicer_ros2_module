@@ -1540,6 +1540,7 @@ class ROS2MotionControlLogic(ScriptedLoadableModuleLogic):
         """Called when the logic class is instantiated. Can be used for initializing member variables."""
         ScriptedLoadableModuleLogic.__init__(self)
         self.MOVEIT_COLLISION_OBJECT_TOPIC = "/collision_object"
+        self.MOVEIT_COLLISION_OBJECT_HISTORY_DEPTH = 1000
         self.MOVEIT_PLANNING_SCENE_TOPIC = "/planning_scene"
         self.MOVEIT_OBSTACLE_ATTRIBUTE = "ROS2MotionControl.MoveItObstacle"
         self.MOVEIT_OBSTACLE_FRAME_ATTRIBUTE = "ROS2MotionControl.MoveItObstacleFrame"
@@ -1595,7 +1596,19 @@ class ROS2MotionControlLogic(ScriptedLoadableModuleLogic):
 
         if not create:
             return None
-        return ros2Node.CreateAndAddPublisherNode("CollisionObject", self.MOVEIT_COLLISION_OBJECT_TOPIC)
+        # A scene sync publishes every obstacle back to back. With the default
+        # KEEP_LAST(10) history, unacknowledged samples were overwritten while
+        # MoveGroup digested large meshes, so some objects silently kept their
+        # previous pose (DENTOBOT S6-LIVE-01, 4 and 6 Oct 2026). Deep history,
+        # set before the ROS publisher is created.
+        pub = slicer.mrmlScene.CreateNodeByClass("vtkMRMLROS2PublisherCollisionObjectNode")
+        pub.UnRegister(None)
+        pub.SetQoSHistoryDepth(self.MOVEIT_COLLISION_OBJECT_HISTORY_DEPTH)
+        slicer.mrmlScene.AddNode(pub)
+        if not pub.AddToROS2Node(ros2Node.GetID(), self.MOVEIT_COLLISION_OBJECT_TOPIC):
+            slicer.mrmlScene.RemoveNode(pub)
+            return None
+        return pub
 
     def _getPlanningSceneToolPublisher(self, robotNode=None, create=True):
         ros2Node = self._getObstacleROS2Node(robotNode)

@@ -111,6 +111,14 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2MotionControlNode: public vt
   /** Human-readable result from the most recent validity query. */
   std::string GetLastStateValidityMessage() const;
 
+  /** Read MoveGroup's PlanningScene world objects (read-only, /get_planning_scene).
+   *  Returns a JSON array of {"id","frame","bounds_mm":[xmin,xmax,ymin,ymax,zmin,zmax],
+   *  "vertices","primitives"}, mesh vertices transformed by object pose x mesh pose,
+   *  in the objects' frame (MoveIt planning frame), millimetres. Empty string on
+   *  failure; see GetLastPlanningSceneMessage(). DENTOBOT S6-LIVE-01 2026-10-06. */
+  std::string GetMoveItWorldObjectBounds(double timeoutSec = 3.0);
+  std::string GetLastPlanningSceneMessage() const;
+
   /** Compute one explicit-state FK pose for *linkName* in MoveIt's model
    *  frame. Translation is returned in Slicer millimetres. Caller owns the
    *  returned matrix. */

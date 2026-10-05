@@ -18,6 +18,8 @@
 #include <moveit_msgs/action/move_group.hpp>
 #include <moveit_msgs/srv/get_cartesian_path.hpp>
 #include <moveit_msgs/srv/get_state_validity.hpp>
+#include <moveit_msgs/srv/get_planning_scene.hpp>
+#include <moveit_msgs/msg/planning_scene_components.hpp>
 
 #include <algorithm>
 #include <atomic>
@@ -141,6 +143,7 @@ struct vtkMRMLROS2MotionControlNodeInternals
   moveit_msgs::msg::RobotTrajectory CachedTrajectory;
   double LastCartesianPathFraction = 0.0;
   std::string LastStateValidityMessage;
+  std::string LastPlanningSceneMessage;
   std::string LastForwardKinematicsMessage;
   std::string LastJointPlanMessage;
   std::string LastJointPlannerId;
@@ -465,6 +468,120 @@ std::string vtkMRMLROS2MotionControlNode::GetLastJointPlanMessage() const
 std::string vtkMRMLROS2MotionControlNode::GetLastJointPlannerId() const
 {
   return mInternals->LastJointPlannerId;
+}
+
+namespace {
+void DentoQuatPoseToMatrix(const geometry_msgs::msg::Pose & p, double m[3][4])
+{
+  const double x = p.orientation.x, y = p.orientation.y, z = p.orientation.z, w = p.orientation.w;
+  m[0][0] = 1 - 2 * (y * y + z * z); m[0][1] = 2 * (x * y - z * w); m[0][2] = 2 * (x * z + y * w);
+  m[1][0] = 2 * (x * y + z * w); m[1][1] = 1 - 2 * (x * x + z * z); m[1][2] = 2 * (y * z - x * w);
+  m[2][0] = 2 * (x * z - y * w); m[2][1] = 2 * (y * z + x * w); m[2][2] = 1 - 2 * (x * x + y * y);
+  m[0][3] = p.position.x; m[1][3] = p.position.y; m[2][3] = p.position.z;
+}
+
+void DentoComposePose(const double a[3][4], const double b[3][4], double out[3][4])
+{
+  for (int r = 0; r < 3; ++r) {
+    for (int c = 0; c < 4; ++c) {
+      double v = (c == 3) ? a[r][3] : 0.0;
+      for (int k = 0; k < 3; ++k) { v += a[r][k] * b[k][c]; }
+      out[r][c] = v;
+    }
+  }
+}
+
+std::string DentoJsonEscape(const std::string & text)
+{
+  std::string out;
+  for (char ch : text) {
+    if (ch == '"' || ch == '\\') { out += '\\'; }
+    out += ch;
+  }
+  return out;
+}
+}  // namespace
+
+std::string vtkMRMLROS2MotionControlNode::GetLastPlanningSceneMessage() const
+{
+  return mInternals->LastPlanningSceneMessage;
+}
+
+std::string vtkMRMLROS2MotionControlNode::GetMoveItWorldObjectBounds(double timeoutSec)
+{
+  mInternals->LastPlanningSceneMessage.clear();
+  auto node = GetROSNodePointer();
+  if (!node) {
+    mInternals->LastPlanningSceneMessage = "ROS node is unavailable";
+    return "";
+  }
+  auto client = node->create_client<moveit_msgs::srv::GetPlanningScene>("/get_planning_scene");
+  const auto timeout = std::chrono::duration<double>(timeoutSec > 0.0 ? timeoutSec : 3.0);
+  if (!client->wait_for_service(timeout)) {
+    mInternals->LastPlanningSceneMessage = "/get_planning_scene is unavailable after the bounded timeout";
+    return "";
+  }
+  auto request = std::make_shared<moveit_msgs::srv::GetPlanningScene::Request>();
+  request->components.components =
+      moveit_msgs::msg::PlanningSceneComponents::WORLD_OBJECT_NAMES |
+      moveit_msgs::msg::PlanningSceneComponents::WORLD_OBJECT_GEOMETRY;
+  auto future = client->async_send_request(request);
+  const auto startTime = std::chrono::steady_clock::now();
+  while (future.wait_for(std::chrono::milliseconds(10)) != std::future_status::ready) {
+    rclcpp::spin_some(node);
+    if (std::chrono::steady_clock::now() - startTime > timeout) {
+      mInternals->LastPlanningSceneMessage = "/get_planning_scene request timed out";
+      return "";
+    }
+  }
+  auto response = future.get();
+  if (!response) {
+    mInternals->LastPlanningSceneMessage = "/get_planning_scene returned a null response";
+    return "";
+  }
+  std::ostringstream json;
+  json.precision(9);
+  json << "[";
+  bool first = true;
+  for (const auto & object : response->scene.world.collision_objects) {
+    double objectPose[3][4];
+    DentoQuatPoseToMatrix(object.pose, objectPose);
+    double lo[3] = {1e300, 1e300, 1e300};
+    double hi[3] = {-1e300, -1e300, -1e300};
+    size_t vertexCount = 0;
+    for (size_t i = 0; i < object.meshes.size(); ++i) {
+      double meshPose[3][4];
+      double full[3][4];
+      DentoQuatPoseToMatrix(i < object.mesh_poses.size() ? object.mesh_poses[i] : geometry_msgs::msg::Pose(), meshPose);
+      DentoComposePose(objectPose, meshPose, full);
+      for (const auto & v : object.meshes[i].vertices) {
+        for (int r = 0; r < 3; ++r) {
+          const double value = full[r][0] * v.x + full[r][1] * v.y + full[r][2] * v.z + full[r][3];
+          lo[r] = std::min(lo[r], value);
+          hi[r] = std::max(hi[r], value);
+        }
+        ++vertexCount;
+      }
+    }
+    if (!first) { json << ","; }
+    first = false;
+    json << "{\"id\":\"" << DentoJsonEscape(object.id) << "\",\"frame\":\""
+         << DentoJsonEscape(object.header.frame_id) << "\",\"vertices\":" << vertexCount
+         << ",\"primitives\":" << object.primitives.size() << ",\"bounds_mm\":";
+    if (vertexCount == 0) {
+      json << "null";
+    } else {
+      json << "[" << lo[0] * 1000.0 << "," << hi[0] * 1000.0 << "," << lo[1] * 1000.0 << ","
+           << hi[1] * 1000.0 << "," << lo[2] * 1000.0 << "," << hi[2] * 1000.0 << "]";
+    }
+    json << "}";
+  }
+  json << "]";
+  std::ostringstream message;
+  message << "MoveGroup PlanningScene has " << response->scene.world.collision_objects.size()
+          << " world collision object(s)";
+  mInternals->LastPlanningSceneMessage = message.str();
+  return json.str();
 }
 
 bool vtkMRMLROS2MotionControlNode::CheckMoveItStateValidity(
