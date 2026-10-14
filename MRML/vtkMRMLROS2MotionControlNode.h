@@ -126,7 +126,19 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2MotionControlNode: public vt
    *  MoveGroup reports success. DENTOBOT S6-LIVE-01 2026-10-06. */
   bool ApplyMoveItCollisionObject(vtkMRMLModelNode * modelNode, const std::string & frameId,
                                   double timeoutSec = 5.0);
+  /** Apply every model in *models* (vtkCollection of vtkMRMLModelNode) as CollisionObject
+   *  ADDs in ONE /apply_planning_scene diff (is_diff, robot_state.is_diff). The service
+   *  client is created once and cached. The response timeout grows with the total mesh
+   *  points. Returns true only when MoveGroup reports success for the whole diff; on any
+   *  failure the caller must treat MoveGroup's world as unknown. This does not publish
+   *  to /collision_object; the collision guard listens only to that topic. */
+  bool ApplyMoveItCollisionObjects(vtkCollection * models, const std::string & frameId,
+                                   double timeoutSec = 5.0);
   std::string GetLastPlanningSceneMessage() const;
+
+  /** Destroy the cached MoveGroupInterface and service clients (cancels a pending
+   *  async plan). Call before ROS shuts down; they are rebuilt on the next request. */
+  void ReleaseMoveItResources();
 
   /** Compute one explicit-state FK pose for *linkName* in MoveIt's model
    *  frame. Translation is returned in Slicer millimetres. Caller owns the

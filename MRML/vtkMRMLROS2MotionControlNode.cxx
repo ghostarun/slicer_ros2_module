@@ -10,6 +10,7 @@
 #include <vtkCollection.h>
 #include <vtkMatrix4x4.h>
 #include <vtkObjectFactory.h>
+#include <vtkPolyData.h>
 #include <vtkSmartPointer.h>
 
 #include <moveit/move_group_interface/move_group_interface.hpp>
@@ -21,6 +22,7 @@
 #include <moveit_msgs/srv/get_planning_scene.hpp>
 #include <moveit_msgs/srv/apply_planning_scene.hpp>
 #include <vtkMRMLModelNode.h>
+#include <vtkMRMLROS2RobotNode.h>
 #include <moveit_msgs/msg/planning_scene_components.hpp>
 
 #include <algorithm>
@@ -31,6 +33,7 @@
 #include <stdexcept>
 #include <chrono>
 #include <future>
+#include <memory>
 #include <sstream>
 #include <thread>
 
@@ -86,6 +89,17 @@ struct JointPlanReply
 };
 std::atomic<unsigned long long> JointPlanSequence{0};
 
+// A cached MoveGroupInterface keeps the previous request's planner, start state and
+// targets. Reset them so every call behaves like a freshly constructed interface.
+// An empty plannerId selects MoveIt's default, never the planner of the last call.
+void ResetMoveGroupRequest(MoveGroup& group, const std::string& plannerId)
+{
+  group.setPlannerId(plannerId);
+  group.clearPoseTargets();
+  group.clearPathConstraints();
+  group.setStartStateToCurrentState();
+}
+
 void ConfigureExplicitJointPlan(MoveGroup& group,
     const std::string& groupName,
     const std::vector<std::string>& startNames,
@@ -100,7 +114,7 @@ void ConfigureExplicitJointPlan(MoveGroup& group,
   if (startNames.empty() || startNames.size() != startValues.size()) {
     throw std::invalid_argument("Explicit start names/values are empty or mismatched");
   }
-  if (!plannerId.empty()) { group.setPlannerId(plannerId); }
+  ResetMoveGroupRequest(group, plannerId);
   const auto names = group.getJointNames();
   if (names.size() != goalValues.size()) {
     throw std::invalid_argument("Goal vector does not match the planning group");
@@ -152,8 +166,56 @@ struct vtkMRMLROS2MotionControlNodeInternals
   std::string JointPlanToken;
   std::weak_ptr<rclcpp::Node> JointPlanNode;
   std::shared_ptr<JointPlanReply> JointPlan;
-  // Destroyed only by the main-thread API, never by a result callback.
-  std::unique_ptr<MoveGroup> JointPlanGroup;
+  // MoveGroupInterface cached per (ROS node, planning group) and shared by joint plan,
+  // explicit-start plan, async plan and blocking execute. Main thread only. Destroyed only
+  // by the main-thread API (cancel, release, node/group change), never by a result callback.
+  std::weak_ptr<rclcpp::Node> MoveGroupNode;
+  std::string MoveGroupName;
+  std::unique_ptr<MoveGroup> MoveGroupCache;
+  // /apply_planning_scene client, created once per ROS node.
+  std::weak_ptr<rclcpp::Node> ApplySceneNode;
+  rclcpp::Client<moveit_msgs::srv::ApplyPlanningScene>::SharedPtr ApplySceneClient;
+
+  // Return the cached interface for (node, groupName), constructing it on first use or
+  // after the ROS node, its context or the group changed. The caller resets the request
+  // state it depends on (see ResetMoveGroupRequest).
+  MoveGroup& AcquireMoveGroup(
+      const std::shared_ptr<rclcpp::Node>& node, const std::string& groupName,
+      const rclcpp::Duration& waitForServers = rclcpp::Duration::from_seconds(5.0))
+  {
+    if (MoveGroupCache &&
+        (MoveGroupNode.lock() != node || MoveGroupName != groupName ||
+         !rclcpp::ok(node->get_node_base_interface()->get_context()))) {
+      MoveGroupCache.reset();
+    }
+    if (!MoveGroupCache) {
+      MoveGroupCache = std::make_unique<MoveGroup>(
+          node, groupName, std::shared_ptr<tf2_ros::Buffer>(), waitForServers);
+      MoveGroupNode = node;
+      MoveGroupName = groupName;
+    }
+    return *MoveGroupCache;
+  }
+
+  rclcpp::Client<moveit_msgs::srv::ApplyPlanningScene>::SharedPtr AcquireApplySceneClient(
+      const std::shared_ptr<rclcpp::Node>& node)
+  {
+    if (ApplySceneClient && ApplySceneNode.lock() != node) { ApplySceneClient.reset(); }
+    if (!ApplySceneClient) {
+      ApplySceneClient = node->create_client<moveit_msgs::srv::ApplyPlanningScene>("/apply_planning_scene");
+      ApplySceneNode = node;
+    }
+    return ApplySceneClient;
+  }
+
+  void ReleaseCaches()
+  {
+    MoveGroupCache.reset();
+    MoveGroupName.clear();
+    MoveGroupNode.reset();
+    ApplySceneClient.reset();
+    ApplySceneNode.reset();
+  }
 };
 
 // ── vtkStandardNewMacro ──────────────────────────────────────────────────────
@@ -169,6 +231,14 @@ vtkMRMLROS2MotionControlNode::vtkMRMLROS2MotionControlNode()
 vtkMRMLROS2MotionControlNode::~vtkMRMLROS2MotionControlNode()
 {
   try { CancelJointPlan(mInternals->JointPlanToken); } catch (...) {}
+  try { mInternals->ReleaseCaches(); } catch (...) {}
+}
+
+void vtkMRMLROS2MotionControlNode::ReleaseMoveItResources()
+{
+  // Called before ROS shuts down so no cached MoveIt interface outlives its context.
+  try { CancelJointPlan(mInternals->JointPlanToken); } catch (...) {}
+  mInternals->ReleaseCaches();
 }
 
 // ── vtkMRMLNode boilerplate ──────────────────────────────────────────────────
@@ -237,10 +307,8 @@ vtkMoveitMsgsRobotTrajectory* vtkMRMLROS2MotionControlNode::PlanMoveItTrajectory
     return traj;
   }
 
-  moveit::planning_interface::MoveGroupInterface moveGroup(node, groupName);
-  if (!plannerId.empty()) {
-    moveGroup.setPlannerId(plannerId);
-  }
+  MoveGroup& moveGroup = mInternals->AcquireMoveGroup(node, groupName);
+  ResetMoveGroupRequest(moveGroup, plannerId);
   mInternals->LastJointPlannerId = moveGroup.getPlannerId();
 
   const auto jointNames = moveGroup.getJointNames();
@@ -256,7 +324,6 @@ vtkMoveitMsgsRobotTrajectory* vtkMRMLROS2MotionControlNode::PlanMoveItTrajectory
   moveGroup.setMaxVelocityScalingFactor(velScale);
   moveGroup.setMaxAccelerationScalingFactor(accScale);
   moveGroup.setPlanningTime(planningTimeSec > 0.0 ? planningTimeSec : 5.0);
-  moveGroup.setStartStateToCurrentState();
 
   std::map<std::string, double> targets;
   for (size_t i = 0; i < jointNames.size(); ++i) {
@@ -305,7 +372,7 @@ vtkMoveitMsgsRobotTrajectory* vtkMRMLROS2MotionControlNode::PlanMoveItTrajectory
     return trajectory;
   }
   try {
-    MoveGroup group(node, groupName);
+    MoveGroup& group = mInternals->AcquireMoveGroup(node, groupName);
     ConfigureExplicitJointPlan(group, groupName, startJointNames, startJointValues,
         goalJointValues, velocityScaling, accelerationScaling, planningTimeSec, plannerId);
     mInternals->LastJointPlannerId = group.getPlannerId();
@@ -346,16 +413,16 @@ std::string vtkMRMLROS2MotionControlNode::BeginMoveItTrajectoryFromState(
     return "";
   }
   try {
-    auto group = std::make_unique<MoveGroup>(node, groupName,
-        std::shared_ptr<tf2_ros::Buffer>(), rclcpp::Duration::from_seconds(1.0));
-    ConfigureExplicitJointPlan(*group, groupName, startJointNames, startJointValues,
+    MoveGroup& group = mInternals->AcquireMoveGroup(
+        node, groupName, rclcpp::Duration::from_seconds(1.0));
+    ConfigureExplicitJointPlan(group, groupName, startJointNames, startJointValues,
         goalJointValues, velocityScaling, accelerationScaling, planningTimeSec, plannerId);
-    auto& client = group->getMoveGroupClient();
+    auto& client = group.getMoveGroupClient();
     if (!client.action_server_is_ready()) {
       throw std::runtime_error("MoveGroup action server is unavailable");
     }
     JointPlanAction::Goal goal;
-    group->constructMotionPlanRequest(goal.request);
+    group.constructMotionPlanRequest(goal.request);
     goal.planning_options.plan_only = true;
     goal.planning_options.look_around = false;
     goal.planning_options.replan = false;
@@ -388,11 +455,10 @@ std::string vtkMRMLROS2MotionControlNode::BeginMoveItTrajectoryFromState(
             "MoveGroup returned no result";
       }
     };
-    mInternals->LastJointPlannerId = group->getPlannerId();
+    mInternals->LastJointPlannerId = group.getPlannerId();
     mInternals->JointPlanToken = "joint-plan-" + std::to_string(++JointPlanSequence);
     mInternals->JointPlanNode = node;
     mInternals->JointPlan = reply;
-    mInternals->JointPlanGroup = std::move(group);
     client.async_send_goal(goal, options);
     return mInternals->JointPlanToken;
   } catch (const std::exception& error) {
@@ -432,7 +498,6 @@ vtkMoveitMsgsRobotTrajectory* vtkMRMLROS2MotionControlNode::TakeJointPlanResult(
     mInternals->CachedTrajectory = result->planned_trajectory;
     vtkROS2ToSlicer(result->planned_trajectory, vtkSmartPointer<vtkMoveitMsgsRobotTrajectory>(trajectory));
   }
-  mInternals->JointPlanGroup.reset();
   mInternals->JointPlan.reset();
   mInternals->JointPlanNode.reset();
   mInternals->JointPlanToken.clear();
@@ -451,13 +516,13 @@ bool vtkMRMLROS2MotionControlNode::CancelJointPlan(const std::string& token)
     mInternals->JointPlan->Handle.reset();
   }
   mInternals->CachedTrajectory = {};
-  if (handle && mInternals->JointPlanGroup) {
-    try { mInternals->JointPlanGroup->getMoveGroupClient().async_cancel_goal(handle); }
+  if (handle && mInternals->MoveGroupCache) {
+    try { mInternals->MoveGroupCache->getMoveGroupClient().async_cancel_goal(handle); }
     catch (const std::exception&) {} // Local authority is revoked even if ROS is gone.
   }
   // No backend ACK wait. Retain only a tombstone: cancellation is unconfirmed,
   // and no further plan/execution is allowed until this MRML node is recreated.
-  mInternals->JointPlanGroup.reset();
+  mInternals->MoveGroupCache.reset();
   mInternals->LastJointPlanMessage = "Local result revoked; backend cancellation unconfirmed; recreate the motion-control node before another request";
   return true;
 }
@@ -525,7 +590,7 @@ bool vtkMRMLROS2MotionControlNode::ApplyMoveItCollisionObject(
   request->scene.is_diff = true;
   request->scene.robot_state.is_diff = true;
   request->scene.world.collision_objects.push_back(object);
-  auto client = node->create_client<moveit_msgs::srv::ApplyPlanningScene>("/apply_planning_scene");
+  auto client = mInternals->AcquireApplySceneClient(node);
   const auto timeout = std::chrono::duration<double>(timeoutSec > 0.0 ? timeoutSec : 5.0);
   if (!client->wait_for_service(timeout)) {
     mInternals->LastPlanningSceneMessage = "/apply_planning_scene is unavailable after the bounded timeout";
@@ -536,6 +601,7 @@ bool vtkMRMLROS2MotionControlNode::ApplyMoveItCollisionObject(
   while (future.wait_for(std::chrono::milliseconds(5)) != std::future_status::ready) {
     rclcpp::spin_some(node);
     if (std::chrono::steady_clock::now() - startTime > timeout) {
+      mInternals->ApplySceneClient.reset();  // drop the pending request with the client
       mInternals->LastPlanningSceneMessage = "/apply_planning_scene request timed out for " + object.id;
       return false;
     }
@@ -546,6 +612,71 @@ bool vtkMRMLROS2MotionControlNode::ApplyMoveItCollisionObject(
     return false;
   }
   mInternals->LastPlanningSceneMessage = "MoveGroup applied " + object.id;
+  return true;
+}
+
+bool vtkMRMLROS2MotionControlNode::ApplyMoveItCollisionObjects(
+    vtkCollection * models, const std::string & frameId, double timeoutSec)
+{
+  mInternals->LastPlanningSceneMessage.clear();
+  auto node = GetROSNodePointer();
+  if (!node) {
+    mInternals->LastPlanningSceneMessage = "ROS node is unavailable";
+    return false;
+  }
+  if (!models || models->GetNumberOfItems() == 0) {
+    mInternals->LastPlanningSceneMessage = "no model nodes to apply";
+    return false;
+  }
+  // One diff carries every object, so MoveGroup applies the whole set or none of it.
+  auto request = std::make_shared<moveit_msgs::srv::ApplyPlanningScene::Request>();
+  request->scene.is_diff = true;
+  request->scene.robot_state.is_diff = true;
+  double totalPoints = 0.0;
+  for (int i = 0; i < models->GetNumberOfItems(); ++i) {
+    auto * modelNode = vtkMRMLModelNode::SafeDownCast(models->GetItemAsObject(i));
+    if (!modelNode) {
+      mInternals->LastPlanningSceneMessage = "item " + std::to_string(i) + " is not a model node";
+      return false;
+    }
+    if (modelNode->GetPolyData()) {
+      totalPoints += static_cast<double>(modelNode->GetPolyData()->GetNumberOfPoints());
+    }
+    moveit_msgs::msg::CollisionObject object;
+    vtkSlicerToROS2(modelNode, object, node);
+    object.header.frame_id = frameId;
+    object.operation = moveit_msgs::msg::CollisionObject::ADD;
+    request->scene.world.collision_objects.push_back(object);
+  }
+  const size_t objectCount = request->scene.world.collision_objects.size();
+  auto client = mInternals->AcquireApplySceneClient(node);
+  const double baseTimeoutSec = timeoutSec > 0.0 ? timeoutSec : 5.0;
+  if (!client->wait_for_service(std::chrono::duration<double>(baseTimeoutSec))) {
+    mInternals->LastPlanningSceneMessage = "/apply_planning_scene is unavailable after the bounded timeout";
+    return false;
+  }
+  // The response wait grows with the mesh points MoveGroup must digest in this one call.
+  constexpr double kSecondsPerPoint = 5.0e-5;
+  const auto timeout = std::chrono::duration<double>(baseTimeoutSec + kSecondsPerPoint * totalPoints);
+  auto future = client->async_send_request(request);
+  const auto startTime = std::chrono::steady_clock::now();
+  while (future.wait_for(std::chrono::milliseconds(5)) != std::future_status::ready) {
+    rclcpp::spin_some(node);
+    if (std::chrono::steady_clock::now() - startTime > timeout) {
+      mInternals->ApplySceneClient.reset();  // drop the pending request with the client
+      mInternals->LastPlanningSceneMessage =
+          "/apply_planning_scene batch request timed out for " + std::to_string(objectCount) + " object(s)";
+      return false;
+    }
+  }
+  auto response = future.get();
+  if (!response || !response->success) {
+    mInternals->LastPlanningSceneMessage =
+        "MoveGroup rejected the batched planning-scene diff for " + std::to_string(objectCount) + " object(s)";
+    return false;
+  }
+  mInternals->LastPlanningSceneMessage =
+      "MoveGroup applied " + std::to_string(objectCount) + " object(s) in one planning-scene diff";
   return true;
 }
 
@@ -739,9 +870,16 @@ vtkMatrix4x4* vtkMRMLROS2MotionControlNode::ComputeMoveItForwardKinematics(
     return result;
   }
 
-  moveit::planning_interface::MoveGroupInterface moveGroup(node, groupName);
   static_cast<void>(timeoutSec);
-  auto robotModel = moveGroup.getRobotModel();
+  // Prefer the robot node's cached MoveIt model (loaded once by SetupIKMoveIt). Fall back
+  // to the cached MoveGroupInterface when IK has not been set up on that robot.
+  std::shared_ptr<const moveit::core::RobotModel> robotModel;
+  if (auto* robotNode = vtkMRMLROS2RobotNode::SafeDownCast(GetNodeReference("robot"))) {
+    robotModel = robotNode->GetCachedMoveItRobotModel();
+  }
+  if (!robotModel) {
+    robotModel = mInternals->AcquireMoveGroup(node, groupName).getRobotModel();
+  }
   if (!robotModel) {
     mInternals->LastForwardKinematicsMessage = "MoveIt robot model is unavailable";
     vtkErrorMacro(<< "ComputeMoveItForwardKinematics: MoveIt robot model is unavailable");
@@ -976,8 +1114,8 @@ bool vtkMRMLROS2MotionControlNode::ExecuteMoveItTrajectory(
       return false;
     }
 
-    moveit::planning_interface::MoveGroupInterface moveGroup(node, groupName);
-    moveit::planning_interface::MoveGroupInterface::Plan plan;
+    MoveGroup& moveGroup = mInternals->AcquireMoveGroup(node, groupName);
+    MoveGroup::Plan plan;
     plan.trajectory = ros_traj;
 
     auto result = moveGroup.execute(plan);

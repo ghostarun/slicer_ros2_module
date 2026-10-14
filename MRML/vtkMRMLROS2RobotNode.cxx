@@ -11,6 +11,7 @@
 #include <vtksys/SystemTools.hxx>
 #include "vtkAssImpConversion.h"
 
+#include <vtkCollection.h>
 #include <vtkMRMLScene.h>
 #include <vtkMRMLTransformNode.h>
 #include <vtkMRMLLinearTransformNode.h>
@@ -19,6 +20,7 @@
 
 #include <vtkMRMLROS2Utils.h>
 #include <vtkMRMLROS2NodeNode.h>
+#include <vtkMRMLROS2MotionControlNode.h>
 #include <vtkMRMLROS2ParameterNode.h>
 #include <vtkMRMLROS2Tf2LookupNode.h>
 
@@ -84,6 +86,11 @@ vtkMRMLROS2RobotNode::~vtkMRMLROS2RobotNode()
 {
   this->ReleaseMoveItResources();
   this->RemoveRobotVisualization();
+}
+
+std::shared_ptr<moveit::core::RobotModel> vtkMRMLROS2RobotNode::GetCachedMoveItRobotModel() const
+{
+  return mInternals->RobotModelPtr;
 }
 
 void vtkMRMLROS2RobotNode::ReleaseMoveItResources()
@@ -215,6 +222,20 @@ bool vtkMRMLROS2RobotNode::RemoveFromROS2Node(const char * nodeId)
   }
 
   this->ReleaseMoveItResources();
+
+  // Motion-control nodes of this robot cache MoveIt interfaces on the ROS node; release them too.
+  if (this->GetScene()) {
+    vtkCollection * motionNodes = this->GetScene()->GetNodesByClass("vtkMRMLROS2MotionControlNode");
+    if (motionNodes) {
+      motionNodes->InitTraversal();
+      while (auto * node = vtkMRMLROS2MotionControlNode::SafeDownCast(motionNodes->GetNextItemAsObject())) {
+        if (node->GetNodeReference("robot") == this) {
+          node->ReleaseMoveItResources();
+        }
+      }
+      motionNodes->Delete();
+    }
+  }
 
   // Remove the robot visualization
   this->RemoveRobotVisualization();

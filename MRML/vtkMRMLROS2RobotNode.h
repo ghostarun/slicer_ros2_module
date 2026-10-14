@@ -20,6 +20,8 @@ class vtkMRMLROS2ParameterNode;
 class vtkMRMLROS2Tf2LookupNode;
 class vtkMRMLModelNode;
 class vtkMRMLROS2RobotNodeInternals;
+class vtkMRMLROS2MotionControlNode;
+namespace moveit { namespace core { class RobotModel; } }
 
 class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNode
 {
@@ -145,7 +147,10 @@ class VTK_SLICER_ROS2_MODULE_MRML_EXPORT vtkMRMLROS2RobotNode: public vtkMRMLNod
   void ObserveParameterNodeCallback( vtkObject* caller, unsigned long, void* vtkNotUsed(callData));
 
  private:
+  friend class vtkMRMLROS2MotionControlNode;
   void ReleaseMoveItResources();
+  /** MoveIt RobotModel cached by SetupIKMoveIt, or nullptr until IK is set up. */
+  std::shared_ptr<moveit::core::RobotModel> GetCachedMoveItRobotModel() const;
 
   std::string mLastMoveItPositionAxisIKTerminationReason = "not_initialized";
   int mLastMoveItPositionAxisIKIterationCount = 0;
