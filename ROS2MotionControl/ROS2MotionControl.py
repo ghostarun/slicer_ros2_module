@@ -3336,6 +3336,7 @@ class ROS2MotionControlLogic(ScriptedLoadableModuleLogic):
         seedJointValues=None,
         positionAxisOnly=False,
         avoidCollisions=True,
+        refreshPlanningScene=True,
     ):
         """Compute IK via the MoveIt IK interface.
 
@@ -3348,6 +3349,9 @@ class ROS2MotionControlLogic(ScriptedLoadableModuleLogic):
             tipLink:    Name of the end-effector TF link MoveIt should plan to.
             positionAxisOnly: Solve XYZ plus tool +Z and leave axial roll free.
             avoidCollisions: Reject a converged endpoint in the planning scene.
+            refreshPlanningScene: Re-publish obstacles and attached tools before
+                solving (default).  Pass False when the caller has already
+                synchronised the planning scene and proved it unchanged.
 
         Returns:
             List of joint angles in radians, or ``None`` if no solution found.
@@ -3370,7 +3374,7 @@ class ROS2MotionControlLogic(ScriptedLoadableModuleLogic):
             print(f"  [{targetPose.GetElement(3,0):.3f}, {targetPose.GetElement(3,1):.3f}, {targetPose.GetElement(3,2):.3f}, {targetPose.GetElement(3,3):.3f}]")
 
         now = time.time()
-        if now - self._last_moveit_obstacle_publish_time > 1.0:
+        if refreshPlanningScene and now - self._last_moveit_obstacle_publish_time > 1.0:
             self.RefreshMoveItPlanningScene(robotmodel)
             self._last_moveit_obstacle_publish_time = now
 
