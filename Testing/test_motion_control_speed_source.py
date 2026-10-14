@@ -40,6 +40,8 @@ def test_no_move_group_is_built_on_the_stack_in_the_main_thread_paths():
     ):
         text = body(CXX, method)
         assert "AcquireMoveGroup" in text, method
+        if "ForwardKinematics" in method:
+            continue  # FK builds a local group only while an async plan owns the cache
         assert not re.search(r"MoveGroupInterface\s+\w+\s*\(", text), method
         assert not re.search(r"\bMoveGroup\s+\w+\s*\(", text), method
     # Planner id is reset on every request: empty selects the default.
@@ -51,7 +53,10 @@ def test_no_move_group_is_built_on_the_stack_in_the_main_thread_paths():
 
 def test_fk_prefers_robot_node_model():
     fk = body(CXX, "vtkMRMLROS2MotionControlNode::ComputeMoveItForwardKinematics")
-    assert fk.index("GetCachedMoveItRobotModel") < fk.index("AcquireMoveGroup")
+    assert fk.index("mInternals->RobotModelPtr") < fk.index("AcquireMoveGroup")
+    # A pending async plan owns the cached group: FK must use a local interface then.
+    assert "mInternals->JointPlan" in fk and "MoveGroup localGroup(" in fk
+    assert "namespace moveit" not in (ROOT / "MRML/vtkMRMLROS2RobotNode.h").read_text()
 
 
 def test_batch_apply_is_one_diff_with_cached_client():
@@ -60,11 +65,11 @@ def test_batch_apply_is_one_diff_with_cached_client():
     assert batch.count("async_send_request") == 1
     assert "scene.is_diff = true" in batch and "robot_state.is_diff = true" in batch
     assert "AcquireApplySceneClient" in batch and "create_client" not in batch
-    assert "kSecondsPerPoint" in batch
+    assert "kSecondsPerPoint" in batch and "kMaxTimeoutSec" in batch
 
 
 def test_cached_interfaces_are_released_before_ros_shutdown():
-    assert "ReleaseMoveItResources" in body(
-        ROBOT, "vtkMRMLROS2RobotNode::RemoveFromROS2Node"
-    )
+    release = body(ROBOT, "vtkMRMLROS2RobotNode::RemoveFromROS2Node")
+    assert "node->ReleaseMoveItResources()" in release
+    assert 'GetNodeReference("robot") == this' not in release
     assert "ReleaseCaches" in body(CXX, "vtkMRMLROS2MotionControlNode::~vtkMRMLROS2MotionControlNode")

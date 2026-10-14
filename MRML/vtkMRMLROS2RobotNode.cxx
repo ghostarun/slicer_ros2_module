@@ -88,11 +88,6 @@ vtkMRMLROS2RobotNode::~vtkMRMLROS2RobotNode()
   this->RemoveRobotVisualization();
 }
 
-std::shared_ptr<moveit::core::RobotModel> vtkMRMLROS2RobotNode::GetCachedMoveItRobotModel() const
-{
-  return mInternals->RobotModelPtr;
-}
-
 void vtkMRMLROS2RobotNode::ReleaseMoveItResources()
 {
   if (mInternals->PlanningSceneMonitorPtr) {
@@ -223,15 +218,13 @@ bool vtkMRMLROS2RobotNode::RemoveFromROS2Node(const char * nodeId)
 
   this->ReleaseMoveItResources();
 
-  // Motion-control nodes of this robot cache MoveIt interfaces on the ROS node; release them too.
+  // Every motion-control node caches MoveIt interfaces on the ROS node; release them all before shutdown.
   if (this->GetScene()) {
     vtkCollection * motionNodes = this->GetScene()->GetNodesByClass("vtkMRMLROS2MotionControlNode");
     if (motionNodes) {
       motionNodes->InitTraversal();
       while (auto * node = vtkMRMLROS2MotionControlNode::SafeDownCast(motionNodes->GetNextItemAsObject())) {
-        if (node->GetNodeReference("robot") == this) {
-          node->ReleaseMoveItResources();
-        }
+        node->ReleaseMoveItResources();
       }
       motionNodes->Delete();
     }

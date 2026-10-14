@@ -23,6 +23,7 @@
 #include <moveit_msgs/srv/apply_planning_scene.hpp>
 #include <vtkMRMLModelNode.h>
 #include <vtkMRMLROS2RobotNode.h>
+#include <vtkMRMLROS2RobotNodeInternals.h>
 #include <moveit_msgs/msg/planning_scene_components.hpp>
 
 #include <algorithm>
@@ -656,8 +657,11 @@ bool vtkMRMLROS2MotionControlNode::ApplyMoveItCollisionObjects(
     return false;
   }
   // The response wait grows with the mesh points MoveGroup must digest in this one call.
+  // The wait is capped so a huge mesh set cannot block the Slicer main thread unboundedly.
   constexpr double kSecondsPerPoint = 5.0e-5;
-  const auto timeout = std::chrono::duration<double>(baseTimeoutSec + kSecondsPerPoint * totalPoints);
+  constexpr double kMaxTimeoutSec = 120.0;
+  const auto timeout = std::chrono::duration<double>(std::min(
+      baseTimeoutSec + kSecondsPerPoint * totalPoints, std::max(kMaxTimeoutSec, baseTimeoutSec)));
   auto future = client->async_send_request(request);
   const auto startTime = std::chrono::steady_clock::now();
   while (future.wait_for(std::chrono::milliseconds(5)) != std::future_status::ready) {
@@ -874,10 +878,16 @@ vtkMatrix4x4* vtkMRMLROS2MotionControlNode::ComputeMoveItForwardKinematics(
   // Prefer the robot node's cached MoveIt model (loaded once by SetupIKMoveIt). Fall back
   // to the cached MoveGroupInterface when IK has not been set up on that robot.
   std::shared_ptr<const moveit::core::RobotModel> robotModel;
-  if (auto* robotNode = vtkMRMLROS2RobotNode::SafeDownCast(GetNodeReference("robot"))) {
-    robotModel = robotNode->GetCachedMoveItRobotModel();
+  auto* robotNode = vtkMRMLROS2RobotNode::SafeDownCast(GetNodeReference("robot"));
+  if (robotNode && robotNode->mInternals) {
+    robotModel = robotNode->mInternals->RobotModelPtr;
   }
-  if (!robotModel) {
+  if (!robotModel && mInternals->JointPlan) {
+    // A pending async joint plan owns the cached interface (and its action client); FK must
+    // never replace it, so read the model from a short-lived local interface instead.
+    MoveGroup localGroup(node, groupName);
+    robotModel = localGroup.getRobotModel();
+  } else if (!robotModel) {
     robotModel = mInternals->AcquireMoveGroup(node, groupName).getRobotModel();
   }
   if (!robotModel) {
